@@ -4982,6 +4982,7 @@ function buildStagePanel() {
   frag.appendChild(colorField('Background', 'stage-bg', state.stage.background,
     rgb => { state.stage.background = [rgb[0], rgb[1], rgb[2], state.stage.background[3]]; },
     a => { state.stage.background[3] = a; }));
+  frag.appendChild(el('p', { class: 'small-note', text: 'Preview only — in-game the HUD widget composites transparent, so this colour is not drawn. For a solid panel, add a Box behind everything.' }));
   frag.appendChild(sectionTitle('Host font (imported, not embedded)'));
   frag.appendChild(textField('Font export name', 'stage-fontname', state.stage.fontName, v => { state.stage.fontName = v; }));
   frag.appendChild(textField('Font SWF url', 'stage-fonturl', state.stage.fontUrl, v => { state.stage.fontUrl = v; }));
@@ -6264,6 +6265,10 @@ const SAMPLE_PROJECT = {
   version: 1,
   stage: { width: 460, height: 220, fps: 30, name: 'hud', background: [22, 24, 28] },
   items: [
+    // Background panel. The stage "background" colour is only an editor
+    // preview -- in-game the widget composites transparent, so a real HUD
+    // panel needs an actual full-stage rect behind everything.
+    { kind: 'rect', x: 0, y: 0, w: 460, h: 220, fill: [22, 24, 28] },
     { kind: 'rect', x: 0, y: 0, w: 460, h: 34, fill: [232, 140, 24] },
     { kind: 'text', x: 14, y: 8, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
 

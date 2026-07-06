@@ -10,6 +10,10 @@ const SAMPLE_PROJECT = {
   version: 1,
   stage: { width: 460, height: 220, fps: 30, name: 'hud', background: [22, 24, 28] },
   items: [
+    // Background panel. The stage "background" colour is only an editor
+    // preview -- in-game the widget composites transparent, so a real HUD
+    // panel needs an actual full-stage rect behind everything.
+    { kind: 'rect', x: 0, y: 0, w: 460, h: 220, fill: [22, 24, 28] },
     { kind: 'rect', x: 0, y: 0, w: 460, h: 34, fill: [232, 140, 24] },
     { kind: 'text', x: 14, y: 8, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
 
