@@ -3378,13 +3378,16 @@ const Luagen = (function() {
     p('local ok, err = pcall(function()');
     p('    if not S.w then');
     p('        build()');
+    p('        S.shown = true');
     p('        Loader.Printf("[' + asset + '] built")');
     userBlock('onbuild', '        ', [
       '        -- Runs once, right after the HUD is built. Push initial values here:',
       setter ? '        -- call("' + setter.name + '", { 100 })' : '        -- call("YourFn", { 0 })',
     ]).forEach(p);
     p('    else');
-    p('        pcall(function() S.w:SetVisible(not S.w:IsVisible()) end)');
+    p('        S.shown = not S.shown');
+    p('        pcall(function() S.w:SetVisible(S.shown) end)');
+    p('        Loader.Printf("[' + asset + '] " .. (S.shown and "shown" or "hidden"))');
     p('    end');
     p('end)');
     p('if not ok then Loader.Printf("[' + asset + '] ERROR: " .. tostring(err)) end');

@@ -22,6 +22,10 @@ test('luagen: emits the verified FlashWidget host idiom', () => {
   assert(code.includes('MrxGuiManager.AddWidgetToHud(player, w)'), 'adds to HUD');
   assert(code.includes('_G.HUD = _G.HUD or {}'), 'per-movie persistent table from the asset name');
   assert(code.includes('local KEYVAL = "insert"'), 'default keybind');
+  // repeat-press toggle must track state and use SetVisible; IsVisible is not a
+  // real widget method (the API is GetVisible), and `not <0/1>` is truthy in Lua.
+  assert(code.includes('S.w:SetVisible(S.shown)'), 'toggle uses tracked S.shown + SetVisible');
+  assert(!code.includes('IsVisible'), 'never calls the nonexistent IsVisible method');
 });
 
 test('luagen: one handler per distinct event, from buttons and menus', () => {
