@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gfxforge — GFX HUD Editor</title>
+
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">gfxforge<small>web HUD editor</small></div>
+    <button class="ghost" id="btnNew" title="New project">New</button>
+    <button class="ghost" id="btnOpen" title="Open a .gfxproj.json file">Open</button>
+    <button class="ghost" id="btnSaveProject" title="Download project as JSON">Save Project</button>
+    <button class="ghost" id="btnPasteJson" title="Load a project from pasted JSON">Paste JSON…</button>
+    <input type="file" id="fileInput" class="hidden-file-input" accept=".json,application/json">
+    <div class="sep"></div>
+    <button class="ghost" id="btnUndo" title="Undo (Ctrl+Z)">↶ Undo</button>
+    <button class="ghost" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+    <div class="sep"></div>
+    <button class="ghost" id="btnHelp" title="Project format reference">Format ref</button>
+    <div class="spacer"></div>
+    <button class="primary" id="btnExport" title="Compile and download .gfx">Export .gfx ⬇</button>
+  </div>
+
+  <!-- Tool rail -->
+  <div class="toolrail">
+    <button class="tool-btn active" data-tool="select" title="Select / move / resize (V)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3l7 17 2-7 7-2z"/></svg>
+      Select
+    </button>
+    <button class="tool-btn" data-tool="rect" title="Rectangle (R)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="12" rx="1"/></svg>
+      Box
+    </button>
+    <button class="tool-btn" data-tool="text" title="Text field (T)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 6h14M12 6v12"/></svg>
+      Text
+    </button>
+    <button class="tool-btn" data-tool="button" title="Button (B)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="18" height="8" rx="2"/></svg>
+      Button
+    </button>
+    <button class="tool-btn" data-tool="clip" title="Named movie clip (C)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>
+      Clip
+    </button>
+    <button class="tool-btn" data-tool="menu" title="Selectable menu wizard (M)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      Menu
+    </button>
+    <!-- Image/bitmap tool TEMPORARILY DISABLED: GFx 2.x renders images only as
+         external textures (DefineExternalImage / tag 1001 + a type-27 WAD texture),
+         so the inline DefineBitsLossless2 this codec emits does not render in
+         Mercenaries 2. Re-enable this button (and the 'i' key in interaction.js's
+         TOOL_KEYS) once an external-texture path exists.
+    <button class="tool-btn" data-tool="image" title="Import an image (I)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-4 4-3-3-5 5"/></svg>
+      Image
+    </button>
+    -->
+    <input type="file" id="imageFileInput" class="hidden-file-input" accept="image/*">
+    <div class="sep"></div>
+    <button class="ghost" id="btnDuplicate" title="Duplicate (Ctrl+D)">⧉ Duplicate</button>
+    <button class="ghost" id="btnDelete" title="Delete (Del)">✕ Delete</button>
+    <div class="sep"></div>
+    <button class="ghost" id="btnLockPos" title="Lock position — item can't be dragged, but can still be resized">🔒 Pos</button>
+    <button class="ghost" id="btnLockSize" title="Lock size — handles are hidden, but item can still be dragged">🔒 Size</button>
+    <div class="sep"></div>
+    <label class="check-row"><input type="checkbox" id="chkMultiSelect"> Multi-select</label>
+    <div class="sep"></div>
+    <label class="check-row"><input type="checkbox" id="chkSnap" checked> Snap to grid</label>
+    <label class="field" style="flex-direction:row;align-items:center;gap:4px;">
+      <span style="color:var(--text-faint)">grid</span>
+      <input type="number" id="gridSize" value="10" min="1" max="100" style="width:48px;">
+    </label>
+    <div class="sep"></div>
+    <button class="ghost" id="zoomOut">－</button>
+    <span id="zoomLabel" style="font-family:var(--mono);font-size:11px;width:42px;text-align:center;">100%</span>
+    <button class="ghost" id="zoomIn">＋</button>
+    <button class="ghost" id="zoomFit">Fit</button>
+    <div class="sep"></div>
+    <button class="primary" id="btnPlayToggle" title="Simulate: click buttons, call functions, watch the script run">▶ Play</button>
+  </div>
+
+  <!-- Main: canvas + sidebar -->
+  <div class="main">
+    <div class="canvas-area" id="canvasArea">
+      <div class="stage-wrap" id="stageWrap">
+        <canvas id="stageCanvas" width="380" height="150"></canvas>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="props">Properties</button>
+        <button class="tab-btn" data-tab="layers">Layers</button>
+        <button class="tab-btn" data-tab="script">Script</button>
+        <button class="tab-btn" data-tab="play">Play</button>
+        <button class="tab-btn" data-tab="reference">Ref</button>
+      </div>
+
+      <div class="tab-panel active" id="tab-props"><!-- rendered by JS --></div>
+
+      <div class="tab-panel" id="tab-layers">
+        <div class="panel-title">Layers (top = front)</div>
+        <div id="layerList" style="display:flex;flex-direction:column;gap:5px;"></div>
+      </div>
+
+      <div class="tab-panel" id="tab-script">
+        <div class="panel-title">AS2-subset behaviour script</div>
+        <textarea id="scriptText" spellcheck="false" placeholder="function SetHealth(n) {&#10;    _root.hp_val = n;&#10;    if (n &lt; 25) { fscommand(&quot;warn&quot;, n); }&#10;}"></textarea>
+        <button id="btnCompileCheck">Compile &amp; verify</button>
+        <div class="script-result" id="scriptResult" style="display:none;"></div>
+      </div>
+
+      <div class="tab-panel" id="tab-play">
+        <div id="playIdle" class="empty-hint">
+          Click <strong>▶ Play</strong> in the tool rail to simulate this HUD:
+          click buttons to see the fscommand events they fire, and manually
+          call any script function with test arguments to watch it update
+          the stage.
+        </div>
+        <div id="playControls" style="display:none; flex-direction:column; gap:10px;">
+          <div class="panel-title">Call a function</div>
+          <div id="playFunctions" style="display:flex; flex-direction:column; gap:8px;"></div>
+          <div class="panel-title">Event log</div>
+          <div id="playLog" class="script-result" style="display:block; max-height:none; flex:1;"></div>
+          <button class="ghost" id="btnPlayClearLog">Clear log</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-reference">
+        <div class="panel-title">Reference image</div>
+        <p class="small-note">Drop in a screenshot of the real game screen to trace HUD elements against actual pixels. Purely a visual aid — never saved with the project or exported, so re-add it each session.</p>
+        <div id="refImageIdle">
+          <button class="ghost" id="btnRefUpload">⤒ Load reference image…</button>
+        </div>
+        <div id="refImageControls" style="display:none; flex-direction:column; gap:10px;">
+          <label class="field">Opacity
+            <input type="range" id="refOpacity" min="5" max="100" value="40">
+          </label>
+          <div class="field-row">
+            <label class="field">Offset X<input type="number" id="refOffsetX" value="0"></label>
+            <label class="field">Offset Y<input type="number" id="refOffsetY" value="0"></label>
+          </div>
+          <label class="field">Scale (%)
+            <input type="number" id="refScale" value="100" min="1">
+          </label>
+          <label class="check-row"><input type="checkbox" id="refVisible" checked> Show on stage</label>
+          <button class="ghost" id="btnRefRemove">✕ Remove reference image</button>
+        </div>
+        <input type="file" id="refImageFileInput" class="hidden-file-input" accept="image/*">
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="statusbar">
+    <span id="statStage"></span>
+    <span id="statItems"></span>
+    <span id="statSel"></span>
+    <span class="grow"></span>
+    <span id="autosaveIndicator" title="Autosave status"></span>
+    <span id="statCursor"></span>
+  </div>
+</div>
+
+<!-- Modal: Paste JSON -->
+<div class="modal-overlay" id="modalPaste">
+  <div class="modal">
+    <div class="modal-header"><h3>Load project from JSON</h3></div>
+    <div class="modal-body">
+      <p class="small-note">Paste a project JSON here — hand-written, exported from this tool earlier, or generated by an AI from the format reference. Loading replaces the current scene.</p>
+      <textarea id="pasteJsonText" spellcheck="false" placeholder="{&#10;  &quot;stage&quot;: { &quot;width&quot;: 380, &quot;height&quot;: 150, &quot;name&quot;: &quot;hud&quot; },&#10;  &quot;items&quot;: [ ... ],&#10;  &quot;script&quot;: &quot;&quot;&#10;}"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="ghost" data-close="modalPaste">Cancel</button>
+      <button class="primary" id="btnPasteLoad">Load</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Menu wizard -->
+<div class="modal-overlay" id="modalMenu">
+  <div class="modal">
+    <div class="modal-header"><h3>Selectable menu</h3></div>
+    <div class="modal-body">
+      <p class="small-note">Creates one button per option plus a movable highlight clip, and adds a <code>SetSelected(i)</code> function to your script (the host calls it to move the highlight on up/down input).</p>
+      <label class="field">Options (one per line)
+        <textarea id="menuOptions" style="min-height:100px;" spellcheck="false">New Game
+Options
+Quit</textarea>
+      </label>
+      <div class="field-row">
+        <label class="field">Width (px)<input type="number" id="menuWidth" value="170"></label>
+        <label class="field">Row height (px)<input type="number" id="menuRowH" value="22"></label>
+        <label class="field">Gap (px)<input type="number" id="menuGap" value="2"></label>
+      </div>
+      <label class="field">fscommand event name<input type="text" id="menuEvent" value="menuClick"></label>
+    </div>
+    <div class="modal-footer">
+      <button class="ghost" data-close="modalMenu">Cancel</button>
+      <button class="primary" id="btnMenuCreate">Place menu</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Format reference -->
+<div class="modal-overlay" id="modalHelp">
+  <div class="modal" style="width:640px;">
+    <div class="modal-header"><h3>Project format reference</h3></div>
+    <div class="modal-body" id="helpBody"></div>
+    <div class="modal-footer">
+      <button class="ghost" id="btnLoadSample">Load sample project</button>
+      <button class="primary" data-close="modalHelp">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+
+<!-- Codec: pure format/logic modules, no DOM access. Order matters (each -->
+<!-- module reads the previous ones' exported const directly). -->
+<script src="js/codec/bitio.js"></script>
+<script src="js/codec/swf.js"></script>
+<script src="js/codec/avm1.js"></script>
+<script src="js/codec/compiler.js"></script>
+<script src="js/codec/movie.js"></script>
+<script src="js/codec/verify.js"></script>
+<script src="js/codec/avm1-interpreter.js"></script>
+<script src="js/codec/bitmap.js"></script>
+
+<!-- Editor: DOM/canvas/UI logic. -->
+<script src="js/editor/project-io.js"></script>
+<script src="js/editor/render.js"></script>
+<script src="js/editor/interaction.js"></script>
+<script src="js/editor/touch.js"></script>
+<script src="js/editor/panels.js"></script>
+<script src="js/editor/layers-script.js"></script>
+<script src="js/editor/play.js"></script>
+<script src="js/editor/reference-image.js"></script>
+<script src="js/editor/wiring.js"></script>
+<script src="js/editor/autosave.js"></script>
+<script src="js/editor/init.js"></script>
+</body>
+</html>
