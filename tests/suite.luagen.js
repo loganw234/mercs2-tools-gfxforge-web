@@ -54,7 +54,23 @@ test('luagen: default bodies teach bidirectional patterns', () => {
   const { code } = loadContext().Luagen.generate(project);
   assert(code.includes('Event.Create(Event.TimerRelative'), 'helpers shows a self-rescheduling timer');
   assert(code.includes('read a real game value'), 'helpers shows reading a value to push in');
-  assert(code.includes('call("SetSelected"'), 'menu-nav example present (the scene has a menu)');
+  assert(code.includes('call("SetHealth", { v })'), 'helpers poll pushes via the scene setter');
+});
+
+test('luagen: generates a live, clamped menu key-watch (not a broken comment)', () => {
+  const menuProject = {
+    stage: { name: 'hud' },
+    items: [{ kind: 'menu', event: 'menuClick', options: ['New Game', 'Options', 'Quit'] }],
+    script: 'function SetSelected(i) {\n  _root.sel._y = 50 + i * 24;\n}\n',
+  };
+  const { code, regions } = loadContext().Luagen.generate(menuProject);
+  assert(code.includes('local function menu_keys()'), 'emits a live key-watch, not a comment');
+  assert(code.includes('MENU_ROWS = 3'), 'row count comes from the menu options');
+  assert(code.includes('math.min(MENU_ROWS - 1, S.sel + 1)'), 'down is clamped to the last row');
+  assert(code.includes('d and not pd'), 'edge-triggered: one press moves one row');
+  assert(code.includes('if S.w then menu_keys() end'), 'starts even if the HUD is already built');
+  assert(regions.some(r => r.kind === 'menu'), 'menu region present for re-sync');
+  assert(!code.includes('add edge-detection'), 'no incomplete example left behind');
 });
 
 test('luagen: keybind is configurable', () => {

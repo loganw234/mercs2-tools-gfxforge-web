@@ -3252,8 +3252,14 @@ const Luagen = (function() {
     const events = collectEvents(items, script);
     const funcs = collectFunctions(script);
     const vars = collectVars(items);
-    const hasMenuNav = funcs.some((f) => /^SetSelected$/i.test(f.name)) || items.some((it) => it.kind === 'menu');
     const setter = funcs.find((f) => f.vars.length) || funcs[0] || null; // a good function to demo in examples
+    // keyboard menu nav needs a SetSelected function + the menu's row count
+    const setSelectedFn = funcs.find((f) => /^SetSelected$/i.test(f.name));
+    let menuEvent = null, menuRows = 0;
+    const menuItem = items.find((it) => it.kind === 'menu');
+    if (menuItem && Array.isArray(menuItem.options)) { menuEvent = menuItem.event || 'menuClick'; menuRows = menuItem.options.length; }
+    else { const me = events.find((e) => e.source === 'menu'); if (me) { menuEvent = me.event; menuRows = items.filter((it) => it.kind === 'button' && it.event === me.event).length; } }
+    const genMenuNav = !!setSelectedFn && menuRows > 1;
 
     const kept = opts.existing ? extractUserBlocks(opts.existing) : {};
     const userBlock = (k, indent, defaultLines) => {
@@ -3339,19 +3345,7 @@ const Luagen = (function() {
       p('--   (add functions in the movie\'s Script tab, then Sync from scene)');
     }
     if (vars.length) p('-- Dynamic text fields you can drive: ' + vars.map((v) => '"' + v + '"').join(', ') + '.');
-    if (hasMenuNav) {
-      p('--');
-      p('-- Move a menu highlight from the keyboard: poll up/down and call SetSelected.');
-      p('--   local i = 0');
-      p('--   local function keys()');
-      p('--       Event.Create(Event.TimerRelative, { 0.05 }, keys)   -- reschedule');
-      p('--       if not S.w then return end');
-      p('--       -- (add edge-detection so one press moves exactly one row)');
-      p('--       if Loader.IsKeyDown(0x26) then i = i - 1; call("SetSelected", { i }) end   -- up');
-      p('--       if Loader.IsKeyDown(0x28) then i = i + 1; call("SetSelected", { i }) end   -- down');
-      p('--   end');
-      p('--   keys()');
-    }
+    if (genMenuNav) p('-- Up/Down navigate the menu highlight (the key-watch below drives SetSelected).');
     p('--#endregion');
     p('');
     p('-- Your own helpers, timers, and state can live here (kept across syncs):');
@@ -3374,6 +3368,34 @@ const Luagen = (function() {
       '-- tick()',
     ]).forEach(p);
     p('');
+    if (genMenuNav) {
+      p('--#region gfxforge:menu');
+      p('-- Up/Down move the "' + menuEvent + '" highlight; Enter picks the row (calls SetSelected).');
+      p('local MENU_ROWS = ' + menuRows);
+      p('local function menu_keys()');
+      p('    if S.keysOn then return end');
+      p('    S.keysOn = true');
+      p('    S.sel = S.sel or 0');
+      p('    local pu, pd, pe = false, false, false');
+      p('    local function poll()');
+      p('        Event.Create(Event.TimerRelative, { 0.05 }, poll)      -- ~20x/sec, self-reschedules');
+      p('        if not S.w or not S.shown then pu, pd, pe = false, false, false; return end');
+      p('        local u, d, e = Loader.IsKeyDown(0x26), Loader.IsKeyDown(0x28), Loader.IsKeyDown(0x0D)  -- Up, Down, Enter');
+      p('        if u and not pu then S.sel = math.max(0, S.sel - 1); call("SetSelected", { S.sel }) end');
+      p('        if d and not pd then S.sel = math.min(MENU_ROWS - 1, S.sel + 1); call("SetSelected", { S.sel }) end');
+      p('        if e and not pe then');
+      userBlock('on:choose', '            ', [
+        '            -- Runs when the player presses Enter on the highlighted row (index S.sel).',
+        '            Loader.Printf("[' + asset + '] chose row " .. S.sel)',
+      ]).forEach(p);
+      p('        end');
+      p('        pu, pd, pe = u, d, e');
+      p('    end');
+      p('    poll()');
+      p('end');
+      p('--#endregion');
+      p('');
+    }
     p('-- ---- build on first press, hide/show on repeat ----------------------');
     p('local ok, err = pcall(function()');
     p('    if not S.w then');
@@ -3391,6 +3413,7 @@ const Luagen = (function() {
     p('    end');
     p('end)');
     p('if not ok then Loader.Printf("[' + asset + '] ERROR: " .. tostring(err)) end');
+    if (genMenuNav) p('if S.w then menu_keys() end');
 
     const code = L.join('\n') + '\n';
     return { code, regions: findRegions(code), events, functions: funcs };
