@@ -9,7 +9,10 @@
 //
 // The emitted idiom mirrors the in-game-verified examples/mercs2/battery_test.lua
 // exactly (MrxGuiBase.FlashWidget:new / SetLocation / SetSwfFile / the _G re-run
-// guard), parameterised by the scene.
+// guard), parameterised by the scene. It leans toward teaching: handlers cover
+// both directions (movie->Lua fscommands and Lua->movie calls), and the default
+// bodies carry small, correct, commented examples (poll a value and push it,
+// move a clip, drive a menu highlight) for a beginner to adapt.
 //
 // Managed-region model: the whole file is regenerated on every "Sync from
 // scene", but two kinds of fences let the modder's work survive:
@@ -23,29 +26,32 @@ const Luagen = (function() {
 
   // --- small helpers ---------------------------------------------------------
 
-  // A lua-safe identifier fragment from an arbitrary fscommand/event name.
   function ident(s) {
     const t = String(s || '').replace(/[^A-Za-z0-9_]/g, '_');
     return /^[A-Za-z_]/.test(t) ? t : '_' + t;
   }
 
-  // Distinct events the movie can fire, in first-appearance order, with a human
-  // label for the comment. Buttons carry `.event`; a `menu` shorthand item
-  // fires one shared event for all its rows.
-  function collectEvents(items) {
+  // Distinct events, in first-appearance order. Two directions of "event":
+  //   - UI items (buttons/menus) the player triggers, and
+  //   - fscommand("name", ...) calls the movie's own script fires back.
+  // Each carries a source so the generated comment can explain what fires it.
+  function collectEvents(items, script) {
     const seen = new Map();
+    const btnCount = {};
+    const add = (ev, label, source) => { if (ev && !seen.has(ev)) seen.set(ev, { event: ev, label, source }); };
     for (const it of items || []) {
-      let ev = null, label = null;
-      if (it.kind === 'button' && it.event) { ev = it.event; label = it.label || 'button'; }
-      else if (it.kind === 'menu') { ev = it.event || 'menuClick'; label = 'menu'; }
-      if (!ev || seen.has(ev)) continue;
-      seen.set(ev, { event: ev, label });
+      if (it.kind === 'button' && it.event) { btnCount[it.event] = (btnCount[it.event] || 0) + 1; add(it.event, it.label || 'button', 'button'); }
+      else if (it.kind === 'menu') add(it.event || 'menuClick', 'menu', 'menu');
     }
+    const fre = /fscommand\s*\(\s*["']([^"']+)["']/g;
+    let m;
+    while ((m = fre.exec(script || '')) !== null) add(m[1], 'fscommand', 'script');
+    // several buttons sharing one event = a menu group (this is what a menu
+    // expands into on load), so describe it as a row selection, not a button.
+    for (const e of seen.values()) if (e.source === 'button' && btnCount[e.event] > 1) e.source = 'menu';
     return [...seen.values()];
   }
 
-  // Walk from the params ')' to the matching '}' of a function body. Good enough
-  // for the AS2 subset (no braces-in-strings gymnastics needed in practice).
   function functionBody(src, fromIndex) {
     const open = src.indexOf('{', fromIndex);
     if (open < 0) return '';
@@ -58,35 +64,44 @@ const Luagen = (function() {
     return src.slice(open + 1);
   }
 
-  // Script functions the host can call, with their params and any _root.<var>
-  // fields they write (so we can tell the modder what each call updates).
+  // Script functions the host can call, with the _root text fields they write
+  // (vars) and the clips they move/scale (moves) -- so we can tell the modder
+  // what each call actually does.
   function collectFunctions(script) {
     const out = [];
     const re = /function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
     let m;
     while ((m = re.exec(script || '')) !== null) {
       const name = m[1];
-      const params = m[2].split(',').map(s => s.trim()).filter(Boolean);
+      const params = m[2].split(',').map((s) => s.trim()).filter(Boolean);
       const body = functionBody(script, re.lastIndex);
-      const vars = [];
-      const vre = /_root\.([A-Za-z_]\w*)\s*=/g;
+      const vars = [], moves = [];
       let vm;
+      const vre = /_root\.([A-Za-z_]\w*)\s*=/g;
       while ((vm = vre.exec(body)) !== null) if (!vars.includes(vm[1])) vars.push(vm[1]);
-      out.push({ name, params, vars });
+      const mre = /_root\.([A-Za-z_]\w*)\.(?:_x|_y|_xscale|_yscale|_rotation|_alpha|_visible)\b/g;
+      while ((vm = mre.exec(body)) !== null) if (!moves.includes(vm[1])) moves.push(vm[1]);
+      out.push({ name, params, vars, moves });
     }
     return out;
   }
 
-  // Text fields the movie exposes to the host (dynamic, var-bound text items).
   function collectVars(items) {
     const out = [];
     for (const it of items || []) if (it.kind === 'text' && it.var && !out.includes(it.var)) out.push(it.var);
     return out;
   }
 
-  // A placeholder argument list for a call example, based on param names.
   function exampleArgs(params) {
-    return params.map(p => /n|num|val|health|hp|amount|count|i|idx|index|sel/i.test(p) ? '0' : '""').join(', ');
+    return params.map((p) => (/n|num|val|health|hp|amount|count|i|idx|index|sel|pct|scale/i.test(p) ? '0' : '""')).join(', ');
+  }
+
+  // "   -- updates "hp_val"; moves "bar""  for a call cheat-sheet line.
+  function callNote(fn) {
+    const notes = [];
+    if (fn.vars.length) notes.push('updates ' + fn.vars.map((v) => '"' + v + '"').join(', '));
+    if (fn.moves.length) notes.push('moves ' + fn.moves.map((v) => '"' + v + '"').join(', '));
+    return notes.length ? '   -- ' + notes.join('; ') : '';
   }
 
   // --- marker parsing (shared by the panel for highlighting + preservation) --
@@ -96,8 +111,6 @@ const Luagen = (function() {
   const RE_USER = /^\s*--#user\s+(\S+)\s*$/;
   const RE_ENDUSER = /^\s*--#enduser\s*$/;
 
-  // All gfxforge:<kind> regions with their 1-based inclusive line spans. Nested
-  // regions are supported (a handler region lives inside the build region).
   function findRegions(text) {
     const lines = String(text).split('\n');
     const stack = [], out = [];
@@ -112,7 +125,6 @@ const Luagen = (function() {
     return out;
   }
 
-  // Map of --#user key -> the raw inner lines (verbatim, markers excluded).
   function extractUserBlocks(text) {
     const lines = String(text).split('\n');
     const blocks = {};
@@ -140,23 +152,20 @@ const Luagen = (function() {
     const script = (project && project.script) || '';
     const asset = stage.name || 'hud';
     const key = opts.key || 'insert';
-    const G = '_G.' + ident(asset).toUpperCase();       // per-movie persistent table
+    const G = '_G.' + ident(asset).toUpperCase();
     const w = Math.round(stage.width || 380);
     const h = Math.round(stage.height || 150);
 
-    const events = collectEvents(items);
+    const events = collectEvents(items, script);
     const funcs = collectFunctions(script);
     const vars = collectVars(items);
+    const hasMenuNav = funcs.some((f) => /^SetSelected$/i.test(f.name)) || items.some((it) => it.kind === 'menu');
+    const setter = funcs.find((f) => f.vars.length) || funcs[0] || null; // a good function to demo in examples
 
-    // preserved modder code from a previous version of this file
     const kept = opts.existing ? extractUserBlocks(opts.existing) : {};
-    // a --#user block: preserved lines if we have them, else the given default
     const userBlock = (k, indent, defaultLines) => {
-      const pad = indent;
-      const inner = Object.prototype.hasOwnProperty.call(kept, k)
-        ? kept[k].split('\n')
-        : defaultLines;
-      return [pad + '--#user ' + k, ...inner, pad + '--#enduser'];
+      const inner = Object.prototype.hasOwnProperty.call(kept, k) ? kept[k].split('\n') : defaultLines;
+      return [indent + '--#user ' + k, ...inner, indent + '--#enduser'];
     };
 
     const L = [];
@@ -168,6 +177,10 @@ const Luagen = (function() {
     p('--  HOW THIS WORKS');
     p('--  The lua-loader re-runs this whole file each time you press the key');
     p('--  below (KEYVAL). First press builds the HUD; press again to hide it.');
+    p('--');
+    p('--  Two directions of talking to the movie:');
+    p('--    Lua -> movie   call("Fn", { args })         (push values in)');
+    p('--    movie -> Lua   w:SetFlashEventHandler(...)  (react to fscommands)');
     p('--');
     p('--  Blocks fenced by  --#region gfxforge:... --#endregion  are rewritten');
     p('--  when you click "Sync from scene". Put YOUR code in the --#user blocks');
@@ -203,13 +216,15 @@ const Luagen = (function() {
     p('    S.w = w');
     if (events.length) {
       p('');
-      p('    -- one handler per fscommand the movie can fire:');
+      p('    -- movie -> Lua: one handler per event the movie can fire.');
       for (const ev of events) {
         p('    --#region gfxforge:on ' + ev.event);
-        p('    -- Fired when the player triggers "' + ev.event + '"  (' + ev.label + ').');
+        if (ev.source === 'script') p('    -- Fires when the movie script calls fscommand("' + ev.event + '", ...).');
+        else if (ev.source === 'menu') p('    -- Fires when the player picks a menu row (v = the row index).');
+        else p('    -- Fires when the player clicks the "' + ev.label + '" button.');
         p('    pcall(function() w:SetFlashEventHandler("' + ev.event + '", function(_, v)');
         userBlock('on:' + ev.event, '        ', [
-          '        -- v is the fscommand argument (a string) or nil.',
+          '        -- v is the value the movie passed with the fscommand (a string), or nil.',
           '        -- TODO: your code for "' + ev.event + '".',
           '        Loader.Printf("[' + asset + '] ' + ev.event + ' -> " .. tostring(v))',
         ]).forEach(p);
@@ -217,34 +232,53 @@ const Luagen = (function() {
         p('    --#endregion');
       }
     } else {
-      p('    -- (no buttons/menus in the scene yet, so no fscommand handlers)');
+      p('    -- (no buttons/menus or fscommands in the scene yet, so no handlers)');
     }
     p('    return w');
     p('end');
     p('--#endregion');
     p('');
     p('--#region gfxforge:calls');
-    p('-- Push values INTO the movie by calling its script functions:');
+    p('-- Lua -> movie: push values in by calling the movie\'s script functions.');
     if (funcs.length) {
-      for (const fn of funcs) {
-        const updates = fn.vars.length ? '   -- updates ' + fn.vars.map(v => '"' + v + '"').join(', ') : '';
-        p('--   call("' + fn.name + '", { ' + exampleArgs(fn.params) + ' })' + updates);
-      }
+      for (const fn of funcs) p('--   call("' + fn.name + '", { ' + exampleArgs(fn.params) + ' })' + callNote(fn));
     } else {
       p('--   (add functions in the movie\'s Script tab, then Sync from scene)');
     }
-    if (vars.length) {
-      p('-- Dynamic text fields in this movie: ' + vars.map(v => '"' + v + '"').join(', ') + '.');
+    if (vars.length) p('-- Dynamic text fields you can drive: ' + vars.map((v) => '"' + v + '"').join(', ') + '.');
+    if (hasMenuNav) {
+      p('--');
+      p('-- Move a menu highlight from the keyboard: poll up/down and call SetSelected.');
+      p('--   local i = 0');
+      p('--   local function keys()');
+      p('--       Event.Create(Event.TimerRelative, { 0.05 }, keys)   -- reschedule');
+      p('--       if not S.w then return end');
+      p('--       -- (add edge-detection so one press moves exactly one row)');
+      p('--       if Loader.IsKeyDown(0x26) then i = i - 1; call("SetSelected", { i }) end   -- up');
+      p('--       if Loader.IsKeyDown(0x28) then i = i + 1; call("SetSelected", { i }) end   -- down');
+      p('--   end');
+      p('--   keys()');
     }
     p('--#endregion');
     p('');
     p('-- Your own helpers, timers, and state can live here (kept across syncs):');
-    userBlock('helpers', '', [
-      '-- Example: a repeating timer that pushes a value every 0.3s.',
-      '-- local function tick()',
-      '--     Event.Create(Event.TimerRelative, { 0.30 }, tick)',
-      '--     if S.w then call("SetHealth", { 100 }) end',
+    userBlock('helpers', '', setter ? [
+      '-- Example: poll a value ~3x a second and push it into the HUD.',
+      '-- Uncomment, then swap the fake read for a real game value.',
+      '-- local function poll()',
+      '--     Event.Create(Event.TimerRelative, { 0.30 }, poll)   -- reschedule self',
+      '--     if not S.w then return end',
+      '--     local v = 100      -- TODO: read a real game value here',
+      '--     call("' + setter.name + '", { v })' + callNote(setter),
       '-- end',
+      '-- poll()',
+    ] : [
+      '-- local function tick()',
+      '--     Event.Create(Event.TimerRelative, { 0.30 }, tick)   -- reschedule self',
+      '--     if not S.w then return end',
+      '--     -- call your movie functions here',
+      '-- end',
+      '-- tick()',
     ]).forEach(p);
     p('');
     p('-- ---- build on first press, hide/show on repeat ----------------------');
@@ -253,8 +287,8 @@ const Luagen = (function() {
     p('        build()');
     p('        Loader.Printf("[' + asset + '] built")');
     userBlock('onbuild', '        ', [
-      '        -- Runs once, right after the HUD is built. Set initial values:',
-      '        -- call("SetHealth", { 100 })',
+      '        -- Runs once, right after the HUD is built. Push initial values here:',
+      setter ? '        -- call("' + setter.name + '", { 100 })' : '        -- call("YourFn", { 0 })',
     ]).forEach(p);
     p('    else');
     p('        pcall(function() S.w:SetVisible(not S.w:IsVisible()) end)');

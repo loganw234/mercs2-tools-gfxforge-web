@@ -1,18 +1,44 @@
 
 // -- sample project + help content --------------------------------------------
 
+// The starter project. Deliberately a "bit of everything" so a beginner can
+// read one small scene + its generated Lua and see each capability once:
+// static shapes, two live text fields, a clip the script scales (the bar), a
+// button and a menu that fire events back to Lua, and a script that talks both
+// directions (SetHealth pushes text + moves the bar + fires "warn" when low).
 const SAMPLE_PROJECT = {
   version: 1,
-  stage: { width: 440, height: 200, fps: 30, name: 'hud', background: [22, 24, 28] },
+  stage: { width: 460, height: 220, fps: 30, name: 'hud', background: [22, 24, 28] },
   items: [
-    { kind: 'rect', x: 0, y: 0, w: 440, h: 34, fill: [232, 140, 24] },
+    { kind: 'rect', x: 0, y: 0, w: 460, h: 34, fill: [232, 140, 24] },
     { kind: 'text', x: 14, y: 8, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
-    { kind: 'text', x: 16, y: 60, text: 'HEALTH', size: 11, color: [150, 156, 168] },
-    { kind: 'text', x: 16, y: 78, text: '--', size: 20, color: [255, 196, 72], var: 'hp_val', width: 150 },
-    { kind: 'button', x: 16, y: 150, w: 130, h: 30, event: 'quit', label: 'QUIT' },
-    { kind: 'menu', x: 250, y: 50, options: ['New Game', 'Options', 'Quit'], width: 174, event: 'menuClick' },
+
+    // live health readout + a bar clip the script scales via _xscale
+    { kind: 'text', x: 16, y: 52, text: 'HEALTH', size: 11, color: [150, 156, 168] },
+    { kind: 'text', x: 16, y: 68, text: '100%', size: 20, color: [255, 196, 72], var: 'hp_val', width: 150 },
+    { kind: 'rect', x: 16, y: 104, w: 200, h: 12, fill: [40, 44, 52] },
+    { kind: 'clip', name: 'bar', x: 16, y: 104, w: 200, h: 12, fill: [90, 208, 120] },
+
+    // a second live field, driven by SetStatus(s)
+    { kind: 'text', x: 16, y: 134, text: 'STATUS', size: 11, color: [150, 156, 168] },
+    { kind: 'text', x: 16, y: 150, text: 'ONLINE', size: 14, color: [120, 210, 255], var: 'status_val', width: 200 },
+
+    // a button and a menu that fire fscommand events back to Lua
+    { kind: 'button', x: 16, y: 182, w: 130, h: 30, event: 'quit', label: 'QUIT' },
+    { kind: 'menu', x: 260, y: 52, options: ['New Game', 'Options', 'Quit'], width: 184, event: 'menuClick' },
   ],
-  script: 'function SetHealth(n) {\n    _root.hp_val = n;\n    if (n < 25) { fscommand("warn", n); }\n}\n',
+  // Movie side (AS2). The host (Lua) calls these; SetHealth also fires an event
+  // back. The menu wizard appends a SetSelected(i) on load (moves the highlight).
+  script: [
+    'function SetHealth(n) {',
+    '    _root.hp_val = n + "%";           // update the health text field',
+    '    _root.bar._xscale = n;            // scale the health bar clip (0..100)',
+    '    if (n < 25) { fscommand("warn", n); }   // movie -> Lua: tell the host we are low',
+    '}',
+    'function SetStatus(s) {',
+    '    _root.status_val = s;             // update the status text field',
+    '}',
+  ].join('\n') + '\n',
 };
 
 function buildHelpBody() {

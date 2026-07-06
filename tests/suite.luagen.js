@@ -10,7 +10,7 @@ const project = {
     { kind: 'menu', event: 'menuClick' },
     { kind: 'text', var: 'hp_val' },
   ],
-  script: 'function SetHealth(n) {\n  _root.hp_val = n;\n  if (n < 25) { fscommand("warn", n); }\n}\n',
+  script: 'function SetHealth(n) {\n  _root.hp_val = n;\n  _root.bar._xscale = n;\n  if (n < 25) { fscommand("warn", n); }\n}\n',
 };
 
 const count = (s, sub) => s.split(sub).length - 1;
@@ -28,6 +28,8 @@ test('luagen: one handler per distinct event, from buttons and menus', () => {
   const { code, regions } = loadContext().Luagen.generate(project);
   assert(code.includes('w:SetFlashEventHandler("quit", function(_, v)'), 'quit handler');
   assert(code.includes('w:SetFlashEventHandler("menuClick", function(_, v)'), 'menu handler');
+  assert(code.includes('w:SetFlashEventHandler("warn", function(_, v)'), 'handler for a script-fired fscommand (movie -> Lua)');
+  assert(regions.some(r => r.kind === 'on' && r.key === 'warn'), 'warn region present');
   assertEqual(count(code, 'gfxforge:on quit'), 1, 'duplicate event collapses to a single handler');
   assert(regions.some(r => r.kind === 'on' && r.key === 'quit'), 'quit region present');
   assert(regions.some(r => r.kind === 'on' && r.key === 'menuClick'), 'menu region present');
@@ -40,7 +42,15 @@ test('luagen: scrapes script functions with the fields they update', () => {
   assertEqual(functions[0].name, 'SetHealth', 'function name');
   assert(code.includes('call("SetHealth", { 0 })'), 'call example with a numeric placeholder');
   assert(code.includes('updates "hp_val"'), 'annotates the _root field it writes');
-  assert(code.includes('Dynamic text fields in this movie: "hp_val"'), 'lists dynamic fields');
+  assert(code.includes('moves "bar"'), 'annotates the clip it scales');
+  assert(code.includes('Dynamic text fields you can drive: "hp_val"'), 'lists dynamic fields');
+});
+
+test('luagen: default bodies teach bidirectional patterns', () => {
+  const { code } = loadContext().Luagen.generate(project);
+  assert(code.includes('Event.Create(Event.TimerRelative'), 'helpers shows a self-rescheduling timer');
+  assert(code.includes('read a real game value'), 'helpers shows reading a value to push in');
+  assert(code.includes('call("SetSelected"'), 'menu-nav example present (the scene has a menu)');
 });
 
 test('luagen: keybind is configurable', () => {
