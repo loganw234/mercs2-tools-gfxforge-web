@@ -15,6 +15,7 @@ CODEC_FILES = [
     "js/codec/avm1-interpreter.js",
     "js/codec/bitmap.js",
     "js/codec/decode.js",
+    "js/codec/luagen.js",
 ]
 EDITOR_FILES = [
     "js/editor/project-io.js",
@@ -23,6 +24,7 @@ EDITOR_FILES = [
     "js/editor/touch.js",
     "js/editor/panels.js",
     "js/editor/layers-script.js",
+    "js/editor/lua-panel.js",
     "js/editor/play.js",
     "js/editor/reference-image.js",
     "js/editor/wiring.js",

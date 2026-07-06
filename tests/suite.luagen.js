@@ -1,0 +1,82 @@
+// Lua host-script generator (luagen.js): faithful idiom, event/function
+// scraping, region mapping, and --#user preservation across regeneration.
+const { loadContext, test, assert, assertEqual } = require('./run.js');
+
+const project = {
+  stage: { name: 'hud', width: 380, height: 150 },
+  items: [
+    { kind: 'button', event: 'quit', label: 'QUIT' },
+    { kind: 'button', event: 'quit', label: 'QUIT2' }, // same event -> one handler
+    { kind: 'menu', event: 'menuClick' },
+    { kind: 'text', var: 'hp_val' },
+  ],
+  script: 'function SetHealth(n) {\n  _root.hp_val = n;\n  if (n < 25) { fscommand("warn", n); }\n}\n',
+};
+
+const count = (s, sub) => s.split(sub).length - 1;
+
+test('luagen: emits the verified FlashWidget host idiom', () => {
+  const { code } = loadContext().Luagen.generate(project);
+  assert(code.includes('MrxGuiBase.FlashWidget:new()'), 'spawns via FlashWidget:new');
+  assert(code.includes('w:SetSwfFile("hud.gfx", nil, nil)'), 'loads the movie by asset name');
+  assert(code.includes('MrxGuiManager.AddWidgetToHud(player, w)'), 'adds to HUD');
+  assert(code.includes('_G.HUD = _G.HUD or {}'), 'per-movie persistent table from the asset name');
+  assert(code.includes('local KEYVAL = "insert"'), 'default keybind');
+});
+
+test('luagen: one handler per distinct event, from buttons and menus', () => {
+  const { code, regions } = loadContext().Luagen.generate(project);
+  assert(code.includes('w:SetFlashEventHandler("quit", function(_, v)'), 'quit handler');
+  assert(code.includes('w:SetFlashEventHandler("menuClick", function(_, v)'), 'menu handler');
+  assertEqual(count(code, 'gfxforge:on quit'), 1, 'duplicate event collapses to a single handler');
+  assert(regions.some(r => r.kind === 'on' && r.key === 'quit'), 'quit region present');
+  assert(regions.some(r => r.kind === 'on' && r.key === 'menuClick'), 'menu region present');
+  assert(regions.some(r => r.kind === 'build'), 'build region present');
+});
+
+test('luagen: scrapes script functions with the fields they update', () => {
+  const { code, functions } = loadContext().Luagen.generate(project);
+  assertEqual(functions.length, 1, 'one function found');
+  assertEqual(functions[0].name, 'SetHealth', 'function name');
+  assert(code.includes('call("SetHealth", { 0 })'), 'call example with a numeric placeholder');
+  assert(code.includes('updates "hp_val"'), 'annotates the _root field it writes');
+  assert(code.includes('Dynamic text fields in this movie: "hp_val"'), 'lists dynamic fields');
+});
+
+test('luagen: keybind is configurable', () => {
+  const { code } = loadContext().Luagen.generate(project, { key: 'delete' });
+  assert(code.includes('local KEYVAL = "delete"'), 'honours opts.key');
+  assert(code.includes('hud.lua=delete'), 'deploy note matches the key');
+});
+
+test('luagen: findRegions gives inclusive line spans that bracket the handler', () => {
+  const ctx = loadContext();
+  const { code } = ctx.Luagen.generate(project);
+  const lines = code.split('\n');
+  const r = ctx.Luagen.findRegions(code).find(x => x.kind === 'on' && x.key === 'quit');
+  assert(r, 'found the quit region');
+  assert(/--#region gfxforge:on quit/.test(lines[r.start - 1]), 'start line is the region marker');
+  assert(/--#endregion/.test(lines[r.end - 1]), 'end line is the endregion marker');
+  assert(r.end > r.start + 1, 'spans the handler body');
+});
+
+test('luagen: regeneration preserves the modder --#user code, resets the glue', () => {
+  const ctx = loadContext();
+  const first = ctx.Luagen.generate(project).code;
+  assert(first.includes('TODO: your code for "quit"'), 'starts with the default body');
+
+  // modder edits the quit handler body
+  const edited = first.replace(
+    /(--#user on:quit\n)[\s\S]*?(\n\s*--#enduser)/,
+    '$1        Loader.Printf("SENTINEL_CUSTOM")$2'
+  );
+  assert(edited.includes('SENTINEL_CUSTOM'), 'sanity: edit applied');
+
+  // re-sync (e.g. after adding another button elsewhere)
+  const second = ctx.Luagen.generate(project, { existing: edited }).code;
+  assert(second.includes('SENTINEL_CUSTOM'), 'custom code survives regeneration');
+  assert(!second.includes('TODO: your code for "quit"'), 'default body was replaced by the kept one');
+  assert(second.includes('TODO: your code for "menuClick"'), 'untouched handlers keep their default');
+  // extractUserBlocks round-trips the key
+  assert('on:quit' in ctx.Luagen.extractUserBlocks(second), 'user block key preserved');
+});

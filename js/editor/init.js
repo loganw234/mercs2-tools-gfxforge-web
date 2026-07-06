@@ -3,13 +3,14 @@
 
 const SAMPLE_PROJECT = {
   version: 1,
-  stage: { width: 380, height: 150, fps: 30, name: 'hud', background: [22, 24, 28] },
+  stage: { width: 440, height: 200, fps: 30, name: 'hud', background: [22, 24, 28] },
   items: [
-    { kind: 'rect', x: 0, y: 0, w: 380, h: 30, fill: [232, 140, 24] },
-    { kind: 'text', x: 14, y: 6, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
-    { kind: 'text', x: 16, y: 40, text: '--', size: 13, color: [255, 196, 72], var: 'hp_val', width: 100 },
-    { kind: 'button', x: 20, y: 90, w: 120, h: 24, event: 'quit', label: 'QUIT' },
-    { kind: 'menu', x: 220, y: 20, options: ['New Game', 'Options', 'Quit'], width: 140 },
+    { kind: 'rect', x: 0, y: 0, w: 440, h: 34, fill: [232, 140, 24] },
+    { kind: 'text', x: 14, y: 8, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
+    { kind: 'text', x: 16, y: 60, text: 'HEALTH', size: 11, color: [150, 156, 168] },
+    { kind: 'text', x: 16, y: 78, text: '--', size: 20, color: [255, 196, 72], var: 'hp_val', width: 150 },
+    { kind: 'button', x: 16, y: 150, w: 130, h: 30, event: 'quit', label: 'QUIT' },
+    { kind: 'menu', x: 250, y: 50, options: ['New Game', 'Options', 'Quit'], width: 174, event: 'menuClick' },
   ],
   script: 'function SetHealth(n) {\n    _root.hp_val = n;\n    if (n < 25) { fscommand("warn", n); }\n}\n',
 };
@@ -116,6 +117,7 @@ function init() {
   setTool('select');
   fitZoom();
   updateHistoryButtons();
+  wireLuaPanel();
 }
 
 if (document.readyState === 'loading') {

@@ -18,10 +18,12 @@ const CODEC_FILES = [
   'js/codec/bitio.js', 'js/codec/swf.js', 'js/codec/avm1.js',
   'js/codec/compiler.js', 'js/codec/movie.js', 'js/codec/verify.js',
   'js/codec/avm1-interpreter.js', 'js/codec/bitmap.js', 'js/codec/decode.js',
+  'js/codec/luagen.js',
 ];
 const EDITOR_FILES = [
   'js/editor/project-io.js', 'js/editor/render.js', 'js/editor/interaction.js',
   'js/editor/touch.js', 'js/editor/panels.js', 'js/editor/layers-script.js',
+  'js/editor/lua-panel.js',
   'js/editor/play.js', 'js/editor/reference-image.js',
   'js/editor/wiring.js', 'js/editor/autosave.js', 'js/editor/init.js',
 ];
@@ -100,7 +102,7 @@ function loadContext() {
   vm.runInContext(`
     (function exposeForTests() {
       const names = [
-        'Bitio', 'Swf', 'Avm1', 'Compiler', 'GFMovie', 'Verify', 'Avm1Interp', 'Bitmap', 'Decode',
+        'Bitio', 'Swf', 'Avm1', 'Compiler', 'GFMovie', 'Verify', 'Avm1Interp', 'Bitmap', 'Decode', 'Luagen',
         'state', 'loadProjectFromObject', 'serializeProject', 'serializeItem',
         'expandMenuSpec', 'hitHandle', 'itemBounds', 'buildMovieFromState',
         'nudgeSelected', 'toggleLock', 'makeItem', 'defaultItemFields',

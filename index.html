@@ -25,6 +25,8 @@
     <button class="ghost" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
     <div class="sep"></div>
     <button class="ghost" id="btnHelp" title="Project format reference">Format ref</button>
+    <div class="sep"></div>
+    <button class="ghost" id="btnLuaToggle" title="Show/hide the Lua host-script panel">‹/› Lua</button>
     <div class="spacer"></div>
     <button class="primary" id="btnExport" title="Compile and download .gfx">Export .gfx ⬇</button>
   </div>
@@ -89,8 +91,27 @@
     <button class="primary" id="btnPlayToggle" title="Simulate: click buttons, call functions, watch the script run">▶ Play</button>
   </div>
 
-  <!-- Main: canvas + sidebar -->
-  <div class="main">
+  <!-- Main: Lua panel + canvas + sidebar -->
+  <div class="main" id="mainGrid">
+
+    <!-- Left: generated Lua host script -->
+    <div class="lua-sidebar" id="luaSidebar">
+      <div class="lua-head">
+        <span class="lua-title">Lua host script</span>
+        <span class="lua-stale" id="luaStale" title="The scene changed since this script was generated — click Sync to update it">scene changed</span>
+        <span class="spacer"></span>
+        <button class="ghost" id="btnLuaSync" title="Regenerate the glue from the current scene (your --#user code is kept)">⟳ Sync</button>
+        <button class="ghost" id="btnLuaCopy" title="Copy the whole script">⧉</button>
+        <button class="ghost" id="btnLuaDownload" title="Download as <asset>.lua">⬇</button>
+        <button class="ghost" id="btnLuaHide" title="Hide this panel">✕</button>
+      </div>
+      <div class="lua-editor" id="luaEditor">
+        <pre class="lua-hl" id="luaHighlight" aria-hidden="true"></pre>
+        <textarea class="lua-input" id="luaInput" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+      </div>
+      <div class="lua-foot small-note" id="luaFoot">Select an element on the stage to jump to its handler. Your code inside <code>--#user</code> blocks is kept when you Sync.</div>
+    </div>
+
     <div class="canvas-area" id="canvasArea">
       <div class="stage-wrap" id="stageWrap">
         <canvas id="stageCanvas" width="380" height="150"></canvas>
@@ -238,6 +259,7 @@ Quit</textarea>
 <script src="js/codec/avm1-interpreter.js"></script>
 <script src="js/codec/bitmap.js"></script>
 <script src="js/codec/decode.js"></script>
+<script src="js/codec/luagen.js"></script>
 
 <!-- Editor: DOM/canvas/UI logic. -->
 <script src="js/editor/project-io.js"></script>
@@ -246,6 +268,7 @@ Quit</textarea>
 <script src="js/editor/touch.js"></script>
 <script src="js/editor/panels.js"></script>
 <script src="js/editor/layers-script.js"></script>
+<script src="js/editor/lua-panel.js"></script>
 <script src="js/editor/play.js"></script>
 <script src="js/editor/reference-image.js"></script>
 <script src="js/editor/wiring.js"></script>

@@ -108,6 +108,7 @@ function afterStructuralChange() {
   updateStatusBar();
   updateHistoryButtons();
   scheduleAutosave();
+  if (typeof onSceneStructureChanged === 'function') onSceneStructureChanged();
 }
 
 function renderAllSoft() {

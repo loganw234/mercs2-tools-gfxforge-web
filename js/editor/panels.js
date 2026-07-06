@@ -210,6 +210,7 @@ function buildRadiusField(it) {
 // -- properties panel ----------------------------------------------------------
 
 function renderProperties() {
+  if (typeof updateLuaSelectionHighlight === 'function') updateLuaSelectionHighlight();
   const root = document.getElementById('tab-props');
   root.innerHTML = '';
   if (state.mode === 'play') {

@@ -136,9 +136,11 @@ label.field {
 .tool-btn svg { width: 15px; height: 15px; }
 .main {
   display: grid;
-  grid-template-columns: 1fr 300px;
+  grid-template-columns: 320px 1fr 300px;
   min-height: 0;
 }
+.main.lua-hidden { grid-template-columns: 1fr 300px; }
+.main.lua-hidden .lua-sidebar { display: none; }
 .canvas-area {
   position: relative;
   overflow: auto;
@@ -151,8 +153,8 @@ label.field {
   background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
   background-color: #121317;
   display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
+  align-items: safe center;
+  justify-content: safe center;
   padding: 40px;
 }
 .stage-wrap {
@@ -406,17 +408,105 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
   border: 1px solid var(--border-soft);
 }
 
+/* ---- Lua host-script sidebar (left column) ---- */
+.lua-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  min-width: 0;
+}
+.lua-head {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.lua-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--amber);
+  white-space: nowrap;
+}
+.lua-head .spacer { flex: 1; }
+.lua-head button { padding: 4px 7px; font-size: 12px; }
+.lua-stale {
+  display: none;
+  font-size: 10px;
+  color: var(--amber);
+  background: #2a2410;
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.lua-stale.show { display: inline-block; }
+.lua-editor { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.lua-hl, .lua-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+  word-wrap: normal;
+}
+.lua-hl {
+  pointer-events: none;
+  color: var(--text);
+  z-index: 0;
+  overflow: hidden;
+}
+.lua-input {
+  z-index: 1;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  -webkit-text-fill-color: transparent;
+  overflow: auto;
+  border-radius: 0;
+  outline: none;
+}
+.lua-input:focus { border-color: transparent; outline: none; }
+.lua-hl .kw  { color: #c99bff; }
+.lua-hl .str { color: #86c98a; }
+.lua-hl .num { color: #d99a5b; }
+.lua-hl .com { color: var(--text-faint); }
+.lua-hl .mk  { color: var(--cyan); }
+.lua-hl .hl-line { background: rgba(232, 148, 26, .18); border-radius: 2px; }
+.lua-foot { padding: 7px 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.lua-foot code { font-family: var(--mono); color: var(--cyan); font-size: 10px; }
+
 /* ---- mobile / narrow viewport ---- */
 @media (max-width: 880px) {
   html, body { overflow: auto; }
-  .main {
+  .main, .main.lua-hidden {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(180px, 42vh) 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: auto;
   }
+  .canvas-area { order: 1; min-height: 46vh; }
   .sidebar {
+    order: 2;
     border-left: none;
     border-top: 1px solid var(--border);
     min-height: 0;
+  }
+  .lua-sidebar {
+    display: flex !important;
+    order: 3;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    min-height: 58vh;
   }
   .canvas-area { padding: 14px; }
   .topbar, .toolrail { gap: 5px; }
@@ -463,6 +553,8 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
     <button class="ghost" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
     <div class="sep"></div>
     <button class="ghost" id="btnHelp" title="Project format reference">Format ref</button>
+    <div class="sep"></div>
+    <button class="ghost" id="btnLuaToggle" title="Show/hide the Lua host-script panel">‹/› Lua</button>
     <div class="spacer"></div>
     <button class="primary" id="btnExport" title="Compile and download .gfx">Export .gfx ⬇</button>
   </div>
@@ -527,8 +619,27 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
     <button class="primary" id="btnPlayToggle" title="Simulate: click buttons, call functions, watch the script run">▶ Play</button>
   </div>
 
-  <!-- Main: canvas + sidebar -->
-  <div class="main">
+  <!-- Main: Lua panel + canvas + sidebar -->
+  <div class="main" id="mainGrid">
+
+    <!-- Left: generated Lua host script -->
+    <div class="lua-sidebar" id="luaSidebar">
+      <div class="lua-head">
+        <span class="lua-title">Lua host script</span>
+        <span class="lua-stale" id="luaStale" title="The scene changed since this script was generated — click Sync to update it">scene changed</span>
+        <span class="spacer"></span>
+        <button class="ghost" id="btnLuaSync" title="Regenerate the glue from the current scene (your --#user code is kept)">⟳ Sync</button>
+        <button class="ghost" id="btnLuaCopy" title="Copy the whole script">⧉</button>
+        <button class="ghost" id="btnLuaDownload" title="Download as <asset>.lua">⬇</button>
+        <button class="ghost" id="btnLuaHide" title="Hide this panel">✕</button>
+      </div>
+      <div class="lua-editor" id="luaEditor">
+        <pre class="lua-hl" id="luaHighlight" aria-hidden="true"></pre>
+        <textarea class="lua-input" id="luaInput" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+      </div>
+      <div class="lua-foot small-note" id="luaFoot">Select an element on the stage to jump to its handler. Your code inside <code>--#user</code> blocks is kept when you Sync.</div>
+    </div>
+
     <div class="canvas-area" id="canvasArea">
       <div class="stage-wrap" id="stageWrap">
         <canvas id="stageCanvas" width="380" height="150"></canvas>
@@ -2955,6 +3066,281 @@ const Decode = (function() {
 if (typeof module !== 'undefined' && module.exports) module.exports = Decode;
 
 
+// ==== js/codec/luagen.js ====
+// Scene -> Mercenaries 2 Lua host-script generator.
+//
+// The .gfx movie is only half of a custom HUD; the other half is a lua-loader
+// "OnKey" script that spawns the FlashWidget, feeds it values
+// (CallActionScriptCallback), and reacts to the fscommands it fires
+// (SetFlashEventHandler). This module turns an editor project into a faithful
+// skeleton of that script so a new modder gets a working, deployable starting
+// point instead of a blank file.
+//
+// The emitted idiom mirrors the in-game-verified examples/mercs2/battery_test.lua
+// exactly (MrxGuiBase.FlashWidget:new / SetLocation / SetSwfFile / the _G re-run
+// guard), parameterised by the scene.
+//
+// Managed-region model: the whole file is regenerated on every "Sync from
+// scene", but two kinds of fences let the modder's work survive:
+//   --#region gfxforge:<kind> [key] ... --#endregion   -> generated glue, and
+//                                                          the highlight anchors
+//   --#user <key> ... --#enduser                        -> the modder's code,
+//                                                          carried across syncs
+// So generate(project, { existing }) re-emits the glue but re-inserts every
+// --#user block found in `existing`, matched by key.
+const Luagen = (function() {
+
+  // --- small helpers ---------------------------------------------------------
+
+  // A lua-safe identifier fragment from an arbitrary fscommand/event name.
+  function ident(s) {
+    const t = String(s || '').replace(/[^A-Za-z0-9_]/g, '_');
+    return /^[A-Za-z_]/.test(t) ? t : '_' + t;
+  }
+
+  // Distinct events the movie can fire, in first-appearance order, with a human
+  // label for the comment. Buttons carry `.event`; a `menu` shorthand item
+  // fires one shared event for all its rows.
+  function collectEvents(items) {
+    const seen = new Map();
+    for (const it of items || []) {
+      let ev = null, label = null;
+      if (it.kind === 'button' && it.event) { ev = it.event; label = it.label || 'button'; }
+      else if (it.kind === 'menu') { ev = it.event || 'menuClick'; label = 'menu'; }
+      if (!ev || seen.has(ev)) continue;
+      seen.set(ev, { event: ev, label });
+    }
+    return [...seen.values()];
+  }
+
+  // Walk from the params ')' to the matching '}' of a function body. Good enough
+  // for the AS2 subset (no braces-in-strings gymnastics needed in practice).
+  function functionBody(src, fromIndex) {
+    const open = src.indexOf('{', fromIndex);
+    if (open < 0) return '';
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      const c = src[i];
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) return src.slice(open + 1, i); }
+    }
+    return src.slice(open + 1);
+  }
+
+  // Script functions the host can call, with their params and any _root.<var>
+  // fields they write (so we can tell the modder what each call updates).
+  function collectFunctions(script) {
+    const out = [];
+    const re = /function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
+    let m;
+    while ((m = re.exec(script || '')) !== null) {
+      const name = m[1];
+      const params = m[2].split(',').map(s => s.trim()).filter(Boolean);
+      const body = functionBody(script, re.lastIndex);
+      const vars = [];
+      const vre = /_root\.([A-Za-z_]\w*)\s*=/g;
+      let vm;
+      while ((vm = vre.exec(body)) !== null) if (!vars.includes(vm[1])) vars.push(vm[1]);
+      out.push({ name, params, vars });
+    }
+    return out;
+  }
+
+  // Text fields the movie exposes to the host (dynamic, var-bound text items).
+  function collectVars(items) {
+    const out = [];
+    for (const it of items || []) if (it.kind === 'text' && it.var && !out.includes(it.var)) out.push(it.var);
+    return out;
+  }
+
+  // A placeholder argument list for a call example, based on param names.
+  function exampleArgs(params) {
+    return params.map(p => /n|num|val|health|hp|amount|count|i|idx|index|sel/i.test(p) ? '0' : '""').join(', ');
+  }
+
+  // --- marker parsing (shared by the panel for highlighting + preservation) --
+
+  const RE_REGION = /^\s*--#region\s+gfxforge:(\w+)(?:\s+(\S+))?\s*$/;
+  const RE_ENDREGION = /^\s*--#endregion\s*$/;
+  const RE_USER = /^\s*--#user\s+(\S+)\s*$/;
+  const RE_ENDUSER = /^\s*--#enduser\s*$/;
+
+  // All gfxforge:<kind> regions with their 1-based inclusive line spans. Nested
+  // regions are supported (a handler region lives inside the build region).
+  function findRegions(text) {
+    const lines = String(text).split('\n');
+    const stack = [], out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const mr = RE_REGION.exec(lines[i]);
+      if (mr) { stack.push({ kind: mr[1], key: mr[2] || null, start: i + 1 }); continue; }
+      if (RE_ENDREGION.test(lines[i]) && stack.length) {
+        const r = stack.pop();
+        out.push({ kind: r.kind, key: r.key, start: r.start, end: i + 1 });
+      }
+    }
+    return out;
+  }
+
+  // Map of --#user key -> the raw inner lines (verbatim, markers excluded).
+  function extractUserBlocks(text) {
+    const lines = String(text).split('\n');
+    const blocks = {};
+    let key = null, buf = null;
+    for (const line of lines) {
+      if (key === null) {
+        const mu = RE_USER.exec(line);
+        if (mu) { key = mu[1]; buf = []; }
+      } else if (RE_ENDUSER.test(line)) {
+        blocks[key] = buf.join('\n');
+        key = null; buf = null;
+      } else {
+        buf.push(line);
+      }
+    }
+    return blocks;
+  }
+
+  // --- generation ------------------------------------------------------------
+
+  function generate(project, opts) {
+    opts = opts || {};
+    const stage = (project && project.stage) || {};
+    const items = (project && project.items) || [];
+    const script = (project && project.script) || '';
+    const asset = stage.name || 'hud';
+    const key = opts.key || 'insert';
+    const G = '_G.' + ident(asset).toUpperCase();       // per-movie persistent table
+    const w = Math.round(stage.width || 380);
+    const h = Math.round(stage.height || 150);
+
+    const events = collectEvents(items);
+    const funcs = collectFunctions(script);
+    const vars = collectVars(items);
+
+    // preserved modder code from a previous version of this file
+    const kept = opts.existing ? extractUserBlocks(opts.existing) : {};
+    // a --#user block: preserved lines if we have them, else the given default
+    const userBlock = (k, indent, defaultLines) => {
+      const pad = indent;
+      const inner = Object.prototype.hasOwnProperty.call(kept, k)
+        ? kept[k].split('\n')
+        : defaultLines;
+      return [pad + '--#user ' + k, ...inner, pad + '--#enduser'];
+    };
+
+    const L = [];
+    const p = (s) => L.push(s === undefined ? '' : s);
+
+    p('-- =====================================================================');
+    p('--  Generated by gfxforge for the movie "' + asset + '".');
+    p('--');
+    p('--  HOW THIS WORKS');
+    p('--  The lua-loader re-runs this whole file each time you press the key');
+    p('--  below (KEYVAL). First press builds the HUD; press again to hide it.');
+    p('--');
+    p('--  Blocks fenced by  --#region gfxforge:... --#endregion  are rewritten');
+    p('--  when you click "Sync from scene". Put YOUR code in the --#user blocks');
+    p('--  -- those are kept across syncs.');
+    p('--');
+    p('--  DEPLOY:  save as   <game>\\scripts\\OnKey\\' + asset + '.lua');
+    p('--           then add  ' + asset + '.lua=' + key + '   under [OnKey] in lua_loader.ini');
+    p('-- =====================================================================');
+    p('local KEYVAL = "' + key + '"          -- key that runs this script (first 10 lines)');
+    p('');
+    p('import("MrxGuiBase")');
+    p('import("MrxGuiManager")');
+    p('');
+    p(G + ' = ' + G + ' or {}          -- survives the re-run on each keypress');
+    p('local S = ' + G);
+    p('');
+    p('-- Lua -> movie: call one of the movie\'s script functions (guarded).');
+    p('local function call(fn, args)');
+    p('    if S.w then pcall(function() S.w:CallActionScriptCallback(fn, args or {}) end) end');
+    p('end');
+    p('');
+    p('--#region gfxforge:build');
+    p('-- Creates the FlashWidget, loads ' + asset + '.gfx, and wires up events.');
+    p('local function build()');
+    p('    local player = Player.GetLocalPlayer()');
+    p('    local w = MrxGuiBase.FlashWidget:new()');
+    p('    pcall(function() w:SetOwner(player) end)');
+    p('    w:SetLocation(40, 40, ' + w + ', ' + h + ')          -- x, y, then the movie w, h');
+    p('    w:SetSwfFile("' + asset + '.gfx", nil, nil)');
+    p('    MrxGuiBase.AddWidget(w)');
+    p('    pcall(function() w:SetVisible(true) end)');
+    p('    pcall(function() MrxGuiManager.AddWidgetToHud(player, w) end)');
+    p('    S.w = w');
+    if (events.length) {
+      p('');
+      p('    -- one handler per fscommand the movie can fire:');
+      for (const ev of events) {
+        p('    --#region gfxforge:on ' + ev.event);
+        p('    -- Fired when the player triggers "' + ev.event + '"  (' + ev.label + ').');
+        p('    pcall(function() w:SetFlashEventHandler("' + ev.event + '", function(_, v)');
+        userBlock('on:' + ev.event, '        ', [
+          '        -- v is the fscommand argument (a string) or nil.',
+          '        -- TODO: your code for "' + ev.event + '".',
+          '        Loader.Printf("[' + asset + '] ' + ev.event + ' -> " .. tostring(v))',
+        ]).forEach(p);
+        p('    end, {}) end)');
+        p('    --#endregion');
+      }
+    } else {
+      p('    -- (no buttons/menus in the scene yet, so no fscommand handlers)');
+    }
+    p('    return w');
+    p('end');
+    p('--#endregion');
+    p('');
+    p('--#region gfxforge:calls');
+    p('-- Push values INTO the movie by calling its script functions:');
+    if (funcs.length) {
+      for (const fn of funcs) {
+        const updates = fn.vars.length ? '   -- updates ' + fn.vars.map(v => '"' + v + '"').join(', ') : '';
+        p('--   call("' + fn.name + '", { ' + exampleArgs(fn.params) + ' })' + updates);
+      }
+    } else {
+      p('--   (add functions in the movie\'s Script tab, then Sync from scene)');
+    }
+    if (vars.length) {
+      p('-- Dynamic text fields in this movie: ' + vars.map(v => '"' + v + '"').join(', ') + '.');
+    }
+    p('--#endregion');
+    p('');
+    p('-- Your own helpers, timers, and state can live here (kept across syncs):');
+    userBlock('helpers', '', [
+      '-- Example: a repeating timer that pushes a value every 0.3s.',
+      '-- local function tick()',
+      '--     Event.Create(Event.TimerRelative, { 0.30 }, tick)',
+      '--     if S.w then call("SetHealth", { 100 }) end',
+      '-- end',
+    ]).forEach(p);
+    p('');
+    p('-- ---- build on first press, hide/show on repeat ----------------------');
+    p('local ok, err = pcall(function()');
+    p('    if not S.w then');
+    p('        build()');
+    p('        Loader.Printf("[' + asset + '] built")');
+    userBlock('onbuild', '        ', [
+      '        -- Runs once, right after the HUD is built. Set initial values:',
+      '        -- call("SetHealth", { 100 })',
+    ]).forEach(p);
+    p('    else');
+    p('        pcall(function() S.w:SetVisible(not S.w:IsVisible()) end)');
+    p('    end');
+    p('end)');
+    p('if not ok then Loader.Printf("[' + asset + '] ERROR: " .. tostring(err)) end');
+
+    const code = L.join('\n') + '\n';
+    return { code, regions: findRegions(code), events, functions: funcs };
+  }
+
+  return { generate, findRegions, extractUserBlocks, _internal: { collectEvents, collectFunctions, collectVars, ident } };
+})();
+
+if (typeof module !== 'undefined' && module.exports) module.exports = Luagen;
+
+
 // ==== js/editor/project-io.js ====
 
 // =========================================================================
@@ -4452,6 +4838,7 @@ function buildRadiusField(it) {
 // -- properties panel ----------------------------------------------------------
 
 function renderProperties() {
+  if (typeof updateLuaSelectionHighlight === 'function') updateLuaSelectionHighlight();
   const root = document.getElementById('tab-props');
   root.innerHTML = '';
   if (state.mode === 'play') {
@@ -4802,6 +5189,181 @@ function buildMovieFromState() {
     m.script(Compiler.compileSource(state.script));
   }
   return m;
+}
+
+
+// ==== js/editor/lua-panel.js ====
+// Left sidebar: the generated Lua host script.
+//
+// Zero-dependency editor: a transparent <textarea> for editing sits over a
+// syntax-highlighted <pre> that mirrors its text (the classic "highlight in a
+// textarea" trick), so we get colour + selection linking without pulling in a
+// heavyweight editor and without breaking the offline single-file bundle.
+//
+// The panel stays in sync with the scene: structural edits regenerate the glue
+// (Luagen preserves your --#user code), and selecting an element on the stage
+// scrolls to and highlights its handler. See js/codec/luagen.js.
+
+let luaInput = null;         // the editable textarea
+let luaHighlight = null;     // the coloured <pre> behind it
+let luaStaleEl = null;       // the "scene changed" badge
+let luaStaleFlag = false;    // scene changed while the textarea was focused
+let luaHlRange = null;       // {a, b} 1-based inclusive lines to highlight, or null
+
+const LUA_KEYWORDS = new Set([
+  'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function', 'if',
+  'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then', 'true', 'until', 'while',
+]);
+
+function luaEsc(s) {
+  return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+}
+
+// One source line -> highlighted HTML. Marker lines (--#region / --#user …) get
+// their own colour so the managed structure reads at a glance.
+function luaHighlightLine(line) {
+  if (/^\s*--#(region|endregion|user|enduser)\b/.test(line)) {
+    return '<span class="mk">' + luaEsc(line) + '</span>';
+  }
+  const re = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(--.*)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(line)) !== null) {
+    out += luaEsc(line.slice(last, m.index));
+    if (m[1]) out += '<span class="str">' + luaEsc(m[1]) + '</span>';
+    else if (m[2]) out += '<span class="com">' + luaEsc(m[2]) + '</span>';
+    else if (m[3]) out += '<span class="num">' + m[3] + '</span>';
+    else if (m[4]) out += LUA_KEYWORDS.has(m[4]) ? '<span class="kw">' + m[4] + '</span>' : m[4];
+    last = re.lastIndex;
+  }
+  out += luaEsc(line.slice(last));
+  return out;
+}
+
+function syncLuaScroll() {
+  if (!luaHighlight || !luaInput) return;
+  luaHighlight.scrollTop = luaInput.scrollTop;
+  luaHighlight.scrollLeft = luaInput.scrollLeft;
+}
+
+function renderLuaHighlight() {
+  if (!luaInput || !luaHighlight) return;
+  const lines = luaInput.value.split('\n');
+  const html = lines.map((ln, i) => {
+    const h = luaHighlightLine(ln);
+    const n = i + 1;
+    return (luaHlRange && n >= luaHlRange.a && n <= luaHlRange.b)
+      ? '<span class="hl-line">' + h + '</span>'
+      : h;
+  }).join('\n');
+  luaHighlight.innerHTML = html;
+  syncLuaScroll();
+}
+
+// Keep a given 1-based line comfortably within the textarea's viewport.
+function scrollLuaToLine(lineNo) {
+  if (!luaInput) return;
+  const lh = 18, padTop = 10; // must track the CSS (12px * 1.5 line-height, 10px pad)
+  const top = padTop + (lineNo - 1) * lh;
+  const viewTop = luaInput.scrollTop, viewH = luaInput.clientHeight;
+  if (top < viewTop + padTop) luaInput.scrollTop = top - padTop;
+  else if (top + lh > viewTop + viewH - padTop) luaInput.scrollTop = top + lh - viewH + padTop;
+  syncLuaScroll();
+}
+
+function setLuaStale(on) {
+  luaStaleFlag = !!on;
+  if (luaStaleEl) luaStaleEl.classList.toggle('show', !!on);
+}
+
+// Regenerate the script from the current scene. With preserve, the modder's
+// --#user blocks and their chosen KEYVAL are carried over.
+function luaGenerateFromScene(opts) {
+  opts = opts || {};
+  if (!luaInput || typeof Luagen === 'undefined' || typeof state === 'undefined') return;
+  const project = { stage: state.stage || {}, items: state.items || [], script: state.script || '' };
+  const existing = opts.preserve ? luaInput.value : '';
+  let key = 'insert';
+  const km = /local KEYVAL = "([^"]*)"/.exec(existing);
+  if (km) key = km[1];
+  const res = Luagen.generate(project, { existing, key });
+  const prevScroll = luaInput.scrollTop;
+  luaInput.value = res.code;
+  setLuaStale(false);
+  luaHlRange = null;
+  renderLuaHighlight();
+  luaInput.scrollTop = prevScroll;
+  syncLuaScroll();
+  updateLuaSelectionHighlight();
+}
+
+// Called from renderProperties(): highlight the selected element's handler.
+function updateLuaSelectionHighlight() {
+  if (!luaInput) return;
+  let range = null;
+  const sel = (typeof getSelected === 'function') ? getSelected() : null;
+  if (sel && (sel.event || sel.kind === 'menu')) {
+    const ev = sel.event || 'menuClick';
+    const r = Luagen.findRegions(luaInput.value).find((x) => x.kind === 'on' && x.key === ev);
+    if (r) range = { a: r.start, b: r.end };
+  }
+  luaHlRange = range;
+  renderLuaHighlight();
+  if (range) scrollLuaToLine(range.a);
+}
+
+// Called from afterStructuralChange(): mid-edit we only flag it; otherwise we
+// regenerate so a new button instantly grows a handler.
+function onSceneStructureChanged() {
+  if (!luaInput) return;
+  if (document.activeElement === luaInput) { setLuaStale(true); return; }
+  luaGenerateFromScene({ preserve: true });
+}
+
+// Click in the script -> select the element whose handler you clicked into.
+function onLuaClick() {
+  const pos = luaInput.value.slice(0, luaInput.selectionStart).split('\n').length; // 1-based caret line
+  const r = Luagen.findRegions(luaInput.value).find((x) => x.kind === 'on' && pos >= x.start && pos <= x.end);
+  if (!r || typeof state === 'undefined') return;
+  const item = (state.items || []).find((it) => (it.event || (it.kind === 'menu' ? 'menuClick' : null)) === r.key);
+  if (item && typeof selectOnly === 'function') { selectOnly(item.id); if (typeof render === 'function') render(); }
+}
+
+function luaCopy() {
+  const done = () => (typeof showToast === 'function') && showToast('Lua script copied', 'success');
+  try { navigator.clipboard.writeText(luaInput.value).then(done, () => { luaInput.select(); document.execCommand('copy'); done(); }); }
+  catch (e) { luaInput.select(); document.execCommand('copy'); done(); }
+}
+
+function luaDownload() {
+  const asset = (state.stage && state.stage.name) || 'hud';
+  const blob = new Blob([luaInput.value], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = asset + '.lua';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  if (typeof showToast === 'function') showToast('Downloaded ' + asset + '.lua', 'success');
+}
+
+function wireLuaPanel() {
+  luaInput = document.getElementById('luaInput');
+  luaHighlight = document.getElementById('luaHighlight');
+  luaStaleEl = document.getElementById('luaStale');
+  if (!luaInput) return;
+
+  luaInput.addEventListener('input', () => { luaHlRange = null; renderLuaHighlight(); });
+  luaInput.addEventListener('scroll', syncLuaScroll);
+  luaInput.addEventListener('click', onLuaClick);
+  luaInput.addEventListener('blur', () => { if (luaStaleFlag) luaGenerateFromScene({ preserve: true }); });
+
+  const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+  on('btnLuaSync', () => luaGenerateFromScene({ preserve: true }));
+  on('btnLuaCopy', luaCopy);
+  on('btnLuaDownload', luaDownload);
+  on('btnLuaHide', () => document.getElementById('mainGrid').classList.add('lua-hidden'));
+  on('btnLuaToggle', () => document.getElementById('mainGrid').classList.toggle('lua-hidden'));
+
+  luaGenerateFromScene({ preserve: false }); // initial skeleton from the loaded project
 }
 
 
@@ -5187,6 +5749,7 @@ function afterStructuralChange() {
   updateStatusBar();
   updateHistoryButtons();
   scheduleAutosave();
+  if (typeof onSceneStructureChanged === 'function') onSceneStructureChanged();
 }
 
 function renderAllSoft() {
@@ -5568,13 +6131,14 @@ function showRestoreBanner(parsed) {
 
 const SAMPLE_PROJECT = {
   version: 1,
-  stage: { width: 380, height: 150, fps: 30, name: 'hud', background: [22, 24, 28] },
+  stage: { width: 440, height: 200, fps: 30, name: 'hud', background: [22, 24, 28] },
   items: [
-    { kind: 'rect', x: 0, y: 0, w: 380, h: 30, fill: [232, 140, 24] },
-    { kind: 'text', x: 14, y: 6, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
-    { kind: 'text', x: 16, y: 40, text: '--', size: 13, color: [255, 196, 72], var: 'hp_val', width: 100 },
-    { kind: 'button', x: 20, y: 90, w: 120, h: 24, event: 'quit', label: 'QUIT' },
-    { kind: 'menu', x: 220, y: 20, options: ['New Game', 'Options', 'Quit'], width: 140 },
+    { kind: 'rect', x: 0, y: 0, w: 440, h: 34, fill: [232, 140, 24] },
+    { kind: 'text', x: 14, y: 8, text: 'OPERATOR STATUS', size: 15, color: [25, 25, 25] },
+    { kind: 'text', x: 16, y: 60, text: 'HEALTH', size: 11, color: [150, 156, 168] },
+    { kind: 'text', x: 16, y: 78, text: '--', size: 20, color: [255, 196, 72], var: 'hp_val', width: 150 },
+    { kind: 'button', x: 16, y: 150, w: 130, h: 30, event: 'quit', label: 'QUIT' },
+    { kind: 'menu', x: 250, y: 50, options: ['New Game', 'Options', 'Quit'], width: 174, event: 'menuClick' },
   ],
   script: 'function SetHealth(n) {\n    _root.hp_val = n;\n    if (n < 25) { fscommand("warn", n); }\n}\n',
 };
@@ -5681,6 +6245,7 @@ function init() {
   setTool('select');
   fitZoom();
   updateHistoryButtons();
+  wireLuaPanel();
 }
 
 if (document.readyState === 'loading') {
