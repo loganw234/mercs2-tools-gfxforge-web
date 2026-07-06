@@ -144,6 +144,7 @@ function init() {
   fitZoom();
   updateHistoryButtons();
   wireLuaPanel();
+  wireResizers();
 }
 
 if (document.readyState === 'loading') {

@@ -136,11 +136,32 @@ label.field {
 .tool-btn svg { width: 15px; height: 15px; }
 .main {
   display: grid;
-  grid-template-columns: 320px 1fr 300px;
+  grid-template-columns: var(--lua-w, 320px) 7px 1fr 7px var(--props-w, 300px);
   min-height: 0;
 }
-.main.lua-hidden { grid-template-columns: 1fr 300px; }
-.main.lua-hidden .lua-sidebar { display: none; }
+.main.lua-hidden { grid-template-columns: 1fr 7px var(--props-w, 300px); }
+.main.lua-hidden .lua-sidebar,
+.main.lua-hidden .gutter-left { display: none; }
+.gutter {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+}
+.gutter::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+}
+.gutter:hover::before, .gutter.dragging::before, .gutter:focus-visible::before {
+  background: var(--amber);
+  width: 2px;
+}
+.gutter:focus-visible { outline: none; }
+body.col-resizing { cursor: col-resize; user-select: none; }
 .canvas-area {
   position: relative;
   overflow: auto;
@@ -178,7 +199,6 @@ label.field {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-left: 1px solid var(--border);
   min-height: 0;
 }
 .tabs {
@@ -413,7 +433,6 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-right: 1px solid var(--border);
   min-height: 0;
   min-width: 0;
 }
@@ -494,6 +513,7 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
     grid-template-rows: none;
     grid-auto-rows: auto;
   }
+  .gutter { display: none; }
   .canvas-area { order: 1; min-height: 46vh; }
   .sidebar {
     order: 2;
@@ -640,11 +660,15 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
       <div class="lua-foot small-note" id="luaFoot">Select an element on the stage to jump to its handler. Your code inside <code>--#user</code> blocks is kept when you Sync.</div>
     </div>
 
+    <div class="gutter gutter-left" data-resize="lua" role="separator" aria-orientation="vertical" tabindex="0" title="Drag to resize · double-click to reset"></div>
+
     <div class="canvas-area" id="canvasArea">
       <div class="stage-wrap" id="stageWrap">
         <canvas id="stageCanvas" width="380" height="150"></canvas>
       </div>
     </div>
+
+    <div class="gutter gutter-right" data-resize="props" role="separator" aria-orientation="vertical" tabindex="0" title="Drag to resize · double-click to reset"></div>
 
     <div class="sidebar">
       <div class="tabs">
@@ -5791,6 +5815,74 @@ function renderAllSoft() {
   updateStatusBar();
 }
 
+// -- resizable sidebars ----------------------------------------------------------
+// Drag the gutters between panes to resize the Lua / properties columns. The
+// widths live in CSS vars on the grid (--lua-w / --props-w) and persist to
+// localStorage. Double-click resets; arrow keys nudge (Shift = bigger step).
+function wireResizers() {
+  const grid = document.getElementById('mainGrid');
+  if (!grid) return;
+  const KEY = { lua: 'gfxforge.luaWidth', props: 'gfxforge.propsWidth' };
+  const VAR = { lua: '--lua-w', props: '--props-w' };
+  const DEF = { lua: '320px', props: '300px' };
+  const MIN = 200;
+
+  try {
+    for (const side of ['lua', 'props']) {
+      const v = localStorage.getItem(KEY[side]);
+      if (v) grid.style.setProperty(VAR[side], v);
+    }
+  } catch (e) { /* storage blocked — just use defaults */ }
+
+  const maxW = () => Math.max(MIN, grid.getBoundingClientRect().width - 360); // keep canvas + other pane usable
+  const setW = (side, px) => {
+    const w = Math.round(Math.max(MIN, Math.min(px, maxW())));
+    grid.style.setProperty(VAR[side], w + 'px');
+    try { localStorage.setItem(KEY[side], w + 'px'); } catch (e) { /* ignore */ }
+  };
+  const curW = (side) => {
+    const el = side === 'lua' ? document.getElementById('luaSidebar') : document.querySelector('.sidebar');
+    return el ? el.getBoundingClientRect().width : parseInt(DEF[side], 10);
+  };
+
+  let active = null;
+  const onMove = (e) => {
+    if (!active) return;
+    const rect = grid.getBoundingClientRect();
+    setW(active.side, active.side === 'lua' ? (e.clientX - rect.left) : (rect.right - e.clientX));
+  };
+  const onUp = () => {
+    if (!active) return;
+    active.handle.classList.remove('dragging');
+    document.body.classList.remove('col-resizing');
+    active = null;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  grid.querySelectorAll('.gutter').forEach((h) => {
+    const side = h.dataset.resize;
+    h.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      active = { side, handle: h };
+      h.classList.add('dragging');
+      document.body.classList.add('col-resizing');
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+    h.addEventListener('dblclick', () => {
+      grid.style.setProperty(VAR[side], DEF[side]);
+      try { localStorage.setItem(KEY[side], DEF[side]); } catch (e) { /* ignore */ }
+    });
+    h.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      setW(side, curW(side) + (side === 'lua' ? dir : -dir) * (e.shiftKey ? 48 : 16));
+    });
+  });
+}
+
 // -- project new / open / save / paste / export -----------------------------------
 
 function newProject() {
@@ -6306,6 +6398,7 @@ function init() {
   fitZoom();
   updateHistoryButtons();
   wireLuaPanel();
+  wireResizers();
 }
 
 if (document.readyState === 'loading') {

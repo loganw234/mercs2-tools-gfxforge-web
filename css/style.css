@@ -128,11 +128,32 @@ label.field {
 .tool-btn svg { width: 15px; height: 15px; }
 .main {
   display: grid;
-  grid-template-columns: 320px 1fr 300px;
+  grid-template-columns: var(--lua-w, 320px) 7px 1fr 7px var(--props-w, 300px);
   min-height: 0;
 }
-.main.lua-hidden { grid-template-columns: 1fr 300px; }
-.main.lua-hidden .lua-sidebar { display: none; }
+.main.lua-hidden { grid-template-columns: 1fr 7px var(--props-w, 300px); }
+.main.lua-hidden .lua-sidebar,
+.main.lua-hidden .gutter-left { display: none; }
+.gutter {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+}
+.gutter::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+}
+.gutter:hover::before, .gutter.dragging::before, .gutter:focus-visible::before {
+  background: var(--amber);
+  width: 2px;
+}
+.gutter:focus-visible { outline: none; }
+body.col-resizing { cursor: col-resize; user-select: none; }
 .canvas-area {
   position: relative;
   overflow: auto;
@@ -170,7 +191,6 @@ label.field {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-left: 1px solid var(--border);
   min-height: 0;
 }
 .tabs {
@@ -405,7 +425,6 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-right: 1px solid var(--border);
   min-height: 0;
   min-width: 0;
 }
@@ -486,6 +505,7 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
     grid-template-rows: none;
     grid-auto-rows: auto;
   }
+  .gutter { display: none; }
   .canvas-area { order: 1; min-height: 46vh; }
   .sidebar {
     order: 2;

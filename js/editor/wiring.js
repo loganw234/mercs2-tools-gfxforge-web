@@ -116,6 +116,74 @@ function renderAllSoft() {
   updateStatusBar();
 }
 
+// -- resizable sidebars ----------------------------------------------------------
+// Drag the gutters between panes to resize the Lua / properties columns. The
+// widths live in CSS vars on the grid (--lua-w / --props-w) and persist to
+// localStorage. Double-click resets; arrow keys nudge (Shift = bigger step).
+function wireResizers() {
+  const grid = document.getElementById('mainGrid');
+  if (!grid) return;
+  const KEY = { lua: 'gfxforge.luaWidth', props: 'gfxforge.propsWidth' };
+  const VAR = { lua: '--lua-w', props: '--props-w' };
+  const DEF = { lua: '320px', props: '300px' };
+  const MIN = 200;
+
+  try {
+    for (const side of ['lua', 'props']) {
+      const v = localStorage.getItem(KEY[side]);
+      if (v) grid.style.setProperty(VAR[side], v);
+    }
+  } catch (e) { /* storage blocked — just use defaults */ }
+
+  const maxW = () => Math.max(MIN, grid.getBoundingClientRect().width - 360); // keep canvas + other pane usable
+  const setW = (side, px) => {
+    const w = Math.round(Math.max(MIN, Math.min(px, maxW())));
+    grid.style.setProperty(VAR[side], w + 'px');
+    try { localStorage.setItem(KEY[side], w + 'px'); } catch (e) { /* ignore */ }
+  };
+  const curW = (side) => {
+    const el = side === 'lua' ? document.getElementById('luaSidebar') : document.querySelector('.sidebar');
+    return el ? el.getBoundingClientRect().width : parseInt(DEF[side], 10);
+  };
+
+  let active = null;
+  const onMove = (e) => {
+    if (!active) return;
+    const rect = grid.getBoundingClientRect();
+    setW(active.side, active.side === 'lua' ? (e.clientX - rect.left) : (rect.right - e.clientX));
+  };
+  const onUp = () => {
+    if (!active) return;
+    active.handle.classList.remove('dragging');
+    document.body.classList.remove('col-resizing');
+    active = null;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  grid.querySelectorAll('.gutter').forEach((h) => {
+    const side = h.dataset.resize;
+    h.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      active = { side, handle: h };
+      h.classList.add('dragging');
+      document.body.classList.add('col-resizing');
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+    h.addEventListener('dblclick', () => {
+      grid.style.setProperty(VAR[side], DEF[side]);
+      try { localStorage.setItem(KEY[side], DEF[side]); } catch (e) { /* ignore */ }
+    });
+    h.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      setW(side, curW(side) + (side === 'lua' ? dir : -dir) * (e.shiftKey ? 48 : 16));
+    });
+  });
+}
+
 // -- project new / open / save / paste / export -----------------------------------
 
 function newProject() {
