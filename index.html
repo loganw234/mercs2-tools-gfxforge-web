@@ -15,9 +15,11 @@
     <div class="brand">gfxforge<small>web HUD editor</small></div>
     <button class="ghost" id="btnNew" title="New project">New</button>
     <button class="ghost" id="btnOpen" title="Open a .gfxproj.json file">Open</button>
+    <button class="ghost" id="btnImportGfx" title="Import an existing .gfx movie — recovers shapes/text/clips it can (external images and script aren't recoverable)">Import .gfx</button>
     <button class="ghost" id="btnSaveProject" title="Download project as JSON">Save Project</button>
     <button class="ghost" id="btnPasteJson" title="Load a project from pasted JSON">Paste JSON…</button>
     <input type="file" id="fileInput" class="hidden-file-input" accept=".json,application/json">
+    <input type="file" id="gfxFileInput" class="hidden-file-input" accept=".gfx">
     <div class="sep"></div>
     <button class="ghost" id="btnUndo" title="Undo (Ctrl+Z)">↶ Undo</button>
     <button class="ghost" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
@@ -235,6 +237,7 @@ Quit</textarea>
 <script src="js/codec/verify.js"></script>
 <script src="js/codec/avm1-interpreter.js"></script>
 <script src="js/codec/bitmap.js"></script>
+<script src="js/codec/decode.js"></script>
 
 <!-- Editor: DOM/canvas/UI logic. -->
 <script src="js/editor/project-io.js"></script>

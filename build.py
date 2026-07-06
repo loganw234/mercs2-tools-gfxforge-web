@@ -14,6 +14,7 @@ CODEC_FILES = [
     "js/codec/verify.js",
     "js/codec/avm1-interpreter.js",
     "js/codec/bitmap.js",
+    "js/codec/decode.js",
 ]
 EDITOR_FILES = [
     "js/editor/project-io.js",

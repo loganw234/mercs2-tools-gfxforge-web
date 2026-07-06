@@ -17,7 +17,7 @@ const ROOT = path.join(__dirname, '..');
 const CODEC_FILES = [
   'js/codec/bitio.js', 'js/codec/swf.js', 'js/codec/avm1.js',
   'js/codec/compiler.js', 'js/codec/movie.js', 'js/codec/verify.js',
-  'js/codec/avm1-interpreter.js', 'js/codec/bitmap.js',
+  'js/codec/avm1-interpreter.js', 'js/codec/bitmap.js', 'js/codec/decode.js',
 ];
 const EDITOR_FILES = [
   'js/editor/project-io.js', 'js/editor/render.js', 'js/editor/interaction.js',
@@ -100,7 +100,7 @@ function loadContext() {
   vm.runInContext(`
     (function exposeForTests() {
       const names = [
-        'Bitio', 'Swf', 'Avm1', 'Compiler', 'GFMovie', 'Verify', 'Avm1Interp', 'Bitmap',
+        'Bitio', 'Swf', 'Avm1', 'Compiler', 'GFMovie', 'Verify', 'Avm1Interp', 'Bitmap', 'Decode',
         'state', 'loadProjectFromObject', 'serializeProject', 'serializeItem',
         'expandMenuSpec', 'hitHandle', 'itemBounds', 'buildMovieFromState',
         'nudgeSelected', 'toggleLock', 'makeItem', 'defaultItemFields',

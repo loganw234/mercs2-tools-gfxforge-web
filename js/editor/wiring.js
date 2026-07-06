@@ -159,6 +159,50 @@ function loadProjectJsonText(text, sourceLabel) {
   }
 }
 
+// Import an existing .gfx movie: decode what's recoverable into editable items.
+// Compressed (CFX/CWS) movies are inflated first via the browser's zlib.
+async function inflateZlibToGfx(buf) {
+  const ds = new DecompressionStream('deflate');
+  const raw = new Uint8Array(await new Response(new Blob([buf.subarray(8)]).stream().pipeThrough(ds)).arrayBuffer());
+  const out = new Uint8Array(8 + raw.length);
+  out.set([71, 70, 88], 0);          // 'GFX'
+  out.set(buf.subarray(3, 8), 3);    // version + filelen
+  out.set(raw, 8);
+  return out;
+}
+
+async function importGfxFile(file) {
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const magic = String.fromCharCode(buf[0] || 0, buf[1] || 0, buf[2] || 0);
+    let bytes = buf;
+    if (magic === 'CFX' || magic === 'CWS') {
+      if (typeof DecompressionStream === 'undefined') { showToast('Compressed movie — this browser lacks DecompressionStream', 'error'); return; }
+      bytes = await inflateZlibToGfx(buf);
+    } else if (magic !== 'GFX' && magic !== 'FWS') {
+      showToast('Not a .gfx/.swf movie', 'error'); return;
+    }
+    const { project, notes } = Decode.decodeGfx(bytes);
+    const result = loadProjectFromObject(project);
+    state.stage = result.stage;
+    state.items = result.items;
+    state.script = result.script;
+    state.selectedIds = new Set();
+    undoStack = []; redoStack = [];
+    afterStructuralChange();
+    fitZoom();
+    if (notes.length) {
+      showToast('Imported ' + file.name + ': ' + state.items.length + ' items, ' + notes.length + ' note(s) — see console', 'success');
+      console.warn('gfx import notes (' + file.name + '):', notes);
+    } else {
+      showToast('Imported ' + file.name + ': ' + state.items.length + ' items', 'success');
+    }
+  } catch (e) {
+    showToast('Could not import .gfx: ' + e.message, 'error');
+    console.error(e);
+  }
+}
+
 function saveProjectFile() {
   const json = JSON.stringify(serializeProject(), null, 2);
   downloadBlob(json, (state.stage.name || 'movie') + '.gfxproj.json', 'application/json');
@@ -262,6 +306,13 @@ function wireFileMenu() {
     const reader = new FileReader();
     reader.onload = () => loadProjectJsonText(reader.result, file.name);
     reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  document.getElementById('btnImportGfx').addEventListener('click', () => document.getElementById('gfxFileInput').click());
+  document.getElementById('gfxFileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) importGfxFile(file);
     e.target.value = '';
   });
 
