@@ -160,6 +160,11 @@ gfxforge's own README and is easy for an LLM to generate directly: describe
 the HUD you want, ask for JSON in this format, paste it in with "Paste
 JSON…" in the app.
 
+
+## License
+
+[MIT](LICENSE) -- matching the rest of the Mercenaries 2 tooling.
+
 ## Disclaimer
 
 This is an unofficial, non-commercial community fan project. It is **not affiliated with, associated with,
