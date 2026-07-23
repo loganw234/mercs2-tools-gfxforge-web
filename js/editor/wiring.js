@@ -290,6 +290,35 @@ function exportGfx() {
   }
   downloadBlob(data, (state.stage.name || 'movie') + '.gfx', 'application/octet-stream');
   showToast(`Exported ${(state.stage.name || 'movie')}.gfx (${data.length} bytes)`, 'success');
+  showExportNextStep();
+}
+
+// After an export, point the user at the packer — a .gfx is not installable on its own; it
+// has to go into a patch WAD. wad.mercs2.tools does that with no command line. Persistent +
+// dismissible so it does not nag on every export.
+function showExportNextStep() {
+  let bar = document.getElementById('gfxNextStep');
+  if (bar) { bar.style.display = 'flex'; return; }
+  bar = el('div', { id: 'gfxNextStep' });
+  bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:9999;'
+    + 'display:flex;align-items:center;gap:10px;max-width:min(92vw,560px);padding:10px 14px;'
+    + 'background:#111a2b;color:#e2e8f0;border:1px solid #2f4a6d;border-left:3px solid #60a5fa;'
+    + 'border-radius:8px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4)';
+  const msg = el('div', {}); msg.style.flex = '1';
+  msg.appendChild(el('b', { text: '✓ .gfx exported. ' }));
+  msg.appendChild(document.createTextNode('Next: pack it into a game WAD (no command line) at '));
+  const a = el('a', { text: 'wad.mercs2.tools' });
+  a.href = 'https://wad.mercs2.tools/'; a.target = '_blank'; a.rel = 'noopener';
+  a.style.color = '#7dd3fc'; a.style.fontWeight = '600';
+  msg.appendChild(a);
+  msg.appendChild(document.createTextNode(' — drop your .gfx, name it, save the WAD.'));
+  bar.appendChild(msg);
+  const x = el('button', { text: '✕' });
+  x.style.cssText = 'background:none;border:0;color:#94a3b8;cursor:pointer;font-size:14px;padding:2px 4px';
+  x.title = 'Dismiss';
+  x.addEventListener('click', () => bar.remove());
+  bar.appendChild(x);
+  document.body.appendChild(bar);
 }
 
 function downloadBlob(data, filename, mime) {
