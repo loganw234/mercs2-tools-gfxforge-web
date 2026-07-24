@@ -13,6 +13,7 @@
   <!-- Top bar -->
   <div class="topbar">
     <div class="brand">gfxforge<small>web HUD editor</small></div>
+    <button class="ghost" id="btnWhatsThis" title="New here? Opens the Project format reference — explains .gfx movies, the project JSON format, and the AS2-subset script used in this tool.">? What's a .gfx movie?</button>
     <button class="ghost" id="btnNew" title="New project">New</button>
     <button class="ghost" id="btnOpen" title="Open a .gfxproj.json file">Open</button>
     <button class="ghost" id="btnImportGfx" title="Import an existing .gfx movie — recovers shapes/text/clips it can (external images and script aren't recoverable)">Import .gfx</button>
@@ -98,6 +99,7 @@
     <div class="lua-sidebar" id="luaSidebar">
       <div class="lua-head">
         <span class="lua-title">Lua host script</span>
+        <button class="mini-btn" id="btnLuaHelp" title="How does the movie talk to Lua? See the &quot;HOW THIS WORKS&quot; comment at the top of this script, or the Project format reference for the file format.">(?)</button>
         <span class="lua-stale" id="luaStale" title="The scene changed since this script was generated — click Sync to update it">scene changed</span>
         <span class="spacer"></span>
         <button class="ghost" id="btnLuaSync" title="Regenerate the glue from the current scene (your --#user code is kept)">⟳ Sync</button>
@@ -139,7 +141,10 @@
       </div>
 
       <div class="tab-panel" id="tab-script">
-        <div class="panel-title">AS2-subset behaviour script</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div class="panel-title">AS2-subset behaviour script</div>
+          <button class="mini-btn" id="btnScriptHelp" title="What's AS2-subset? — opens the Project format reference (Script section)">(?)</button>
+        </div>
         <textarea id="scriptText" spellcheck="false" placeholder="function SetHealth(n) {&#10;    _root.hp_val = n;&#10;    if (n &lt; 25) { fscommand(&quot;warn&quot;, n); }&#10;}"></textarea>
         <button id="btnCompileCheck">Compile &amp; verify</button>
         <div class="script-result" id="scriptResult" style="display:none;"></div>

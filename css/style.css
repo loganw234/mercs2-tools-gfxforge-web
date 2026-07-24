@@ -259,7 +259,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex-shrink: 0;
 }
 .layer-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.layer-row .mini-btn {
+.mini-btn {
   background: transparent;
   border: none;
   padding: 2px 4px;
@@ -267,7 +267,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   font-size: 12px;
   line-height: 1;
 }
-.layer-row .mini-btn:hover { color: var(--text); }
+.mini-btn:hover { color: var(--text); }
 .layer-row[draggable="true"] { user-select: none; }
 .layer-row.drag-over { border-color: var(--cyan); }
 #scriptText {

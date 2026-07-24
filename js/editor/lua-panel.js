@@ -162,6 +162,7 @@ function wireLuaPanel() {
   luaInput.addEventListener('blur', () => { if (luaStaleFlag) luaGenerateFromScene({ preserve: true }); });
 
   const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+  on('btnLuaHelp', () => openModal('modalHelp'));
   on('btnLuaSync', () => luaGenerateFromScene({ preserve: true }));
   on('btnLuaCopy', luaCopy);
   on('btnLuaDownload', luaDownload);

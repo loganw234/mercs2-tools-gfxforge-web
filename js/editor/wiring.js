@@ -431,6 +431,8 @@ function wireFileMenu() {
   });
 
   document.getElementById('btnHelp').addEventListener('click', () => openModal('modalHelp'));
+  document.getElementById('btnWhatsThis').addEventListener('click', () => openModal('modalHelp'));
+  document.getElementById('btnScriptHelp').addEventListener('click', () => openModal('modalHelp'));
   document.getElementById('btnLoadSample').addEventListener('click', () => {
     loadProjectJsonText(JSON.stringify(SAMPLE_PROJECT), 'sample project');
     closeModal('modalHelp');
