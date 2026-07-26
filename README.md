@@ -9,6 +9,8 @@ and its tkinter editor.
 Open `index.html` in a browser and go. Everything runs client-side: no
 server, no build step required to *use* it (only to modify it — see below).
 
+![The gfxforge editor: stage in the middle, generated Lua host script on the left, element properties on the right](docs/screenshots/editor.png)
+
 ## What it does
 
 - Place and edit rectangles, text fields, buttons, movie clips, and images on
