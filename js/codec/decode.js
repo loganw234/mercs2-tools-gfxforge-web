@@ -149,16 +149,38 @@ const Decode = (function() {
     return { placements };
   }
 
+  // CXFORMWITHALPHA: HasAddTerms(1), HasMultTerms(1), Nbits(4), then the
+  // multiply terms and then the add terms — four each, all sharing that single
+  // Nbits width. (An earlier version of this reader looked for a separate
+  // width field per group, which desynchronised the stream for any placement
+  // that carried a colour transform, taking the name and everything after it
+  // with it.) Multiply terms are fixed-point over 256, per
+  // GFxStream::ReadCxformRgba.
+  function readCxform(r) {
+    const hasAdd = r.ubits(1), hasMult = r.ubits(1);
+    const nb = r.ubits(4);
+    let mult = null, add = null;
+    if (hasMult) mult = { r: r.sbits(nb) / 256, g: r.sbits(nb) / 256, b: r.sbits(nb) / 256, a: r.sbits(nb) / 256 };
+    if (hasAdd) add = { r: r.sbits(nb), g: r.sbits(nb), b: r.sbits(nb), a: r.sbits(nb) };
+    r.align();
+    return { mult, add };
+  }
+
   function decodePlace(body) {                   // tag 26
     const flags = body[0]; let o = 1;
     const depth = body[o] | (body[o + 1] << 8); o += 2;
-    let charId = null, name = null, matrix = { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 };
+    let charId = null, name = null, cxform = null;
+    let matrix = { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 };
     if (flags & 0x02) { charId = body[o] | (body[o + 1] << 8); o += 2; }
     if (flags & 0x04) { const r = new BitReader(body, o); matrix = readMatrix(r); o = r.pos; }
-    if (flags & 0x08) { const r = new BitReader(body, o); if (r.ubits(1)) { const n = r.ubits(4); r.ubits(n * 4); } if (r.ubits(1)) { const n = r.ubits(4); r.ubits(n * 4); } r.align(); o = r.pos; }  // cxform
+    if (flags & 0x08) { const r = new BitReader(body, o); cxform = readCxform(r); o = r.pos; }
     if (flags & 0x10) o += 2;                    // ratio
     if (flags & 0x20) { const c = cstr(body, o); name = c.s; o = c.next; }
-    return { depth, charId, name, matrix };
+    if (flags & 0x40) o += 2;                    // clip depth
+    // clip actions (flag 0x01) trail the record; nothing after them is read,
+    // so they need no skipping here
+    const alpha = cxform && cxform.mult ? cxform.mult.a : null;
+    return { depth, charId, name, matrix, alpha };
   }
 
   function exporterName(body) { try { const n = body[9]; return latin1(body.subarray(10, 10 + n)); } catch (e) { return 'imported'; } }
@@ -257,7 +279,7 @@ const Decode = (function() {
     return { project, notes };
   }
 
-  return { decodeGfx, _internal: { parseContainer, decodeShape, decodeEditText, BitReader } };
+  return { decodeGfx, _internal: { parseContainer, decodeShape, decodeEditText, decodePlace, readCxform, BitReader } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = Decode;

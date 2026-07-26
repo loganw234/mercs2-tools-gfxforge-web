@@ -101,7 +101,12 @@ function wireTabs() {
 
 function afterStructuralChange() {
   attachAllImageRuntimes(state.items);
+  // Clamp first: loading a project (or deleting a frame) can leave the current
+  // frame pointing past the end of the new timeline.
+  const frameCount = Math.max(1, (state.stage.frames || []).length);
+  if (state.currentFrame >= frameCount) state.currentFrame = frameCount - 1;
   render();
+  renderFramesBar();
   renderProperties();
   renderLayers();
   document.getElementById('scriptText').value = state.script;

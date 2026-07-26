@@ -267,6 +267,59 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex-shrink: 0;
 }
 .layer-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Frames bar: pinned to the bottom of the canvas area rather than placed in
+   its flow, so it can't disturb the stage's centring. */
+.frames-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: rgba(18, 19, 23, 0.92);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.frames-label {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  margin-right: 2px;
+}
+.frames-note { margin-left: auto; }
+.frame-chip {
+  background: #22242b;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-faint);
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.frame-chip:hover { color: var(--text); border-color: #4a4f57; }
+.frame-chip.active {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #10151a;
+  font-weight: 600;
+}
+.frame-chip.small { padding: 2px 6px; }
+.frame-pick { display: flex; flex-wrap: wrap; gap: 4px; }
+.event-source {
+  width: 100%;
+  min-height: 42px;
+  resize: vertical;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .mini-btn {
   background: transparent;
   border: none;
@@ -668,6 +721,7 @@ button.ghost.active { background: var(--amber); border-color: var(--amber); colo
       <div class="stage-wrap" id="stageWrap">
         <canvas id="stageCanvas" width="380" height="150"></canvas>
       </div>
+      <div class="frames-bar" id="framesBar"><!-- rendered by JS --></div>
     </div>
 
     <div class="gutter gutter-right" data-resize="props" role="separator" aria-orientation="vertical" tabindex="0" title="Drag to resize · double-click to reset"></div>
@@ -1174,17 +1228,67 @@ function defineShapeEx(shapeId, x1, y1, x2, y2, options = {}) {
   return tag(32, body);
 }
 
-function defineEditText(charId, x1, y1, x2, y2, fontId, sizePx, text, color, varname = '') {
+// DefineEditText flag bits, split across the two flag bytes that follow the
+// bounds. The original encoder hard-coded these as 0x8d,0x11 — which is
+// HasText|ReadOnly|HasTextColor|HasFont plus NoSelect|UseOutlines, i.e. a
+// single-line read-only field and no way to ask for anything else.
+const EDIT_FLAGS0 = {
+  HAS_TEXT: 0x80, WORD_WRAP: 0x40, MULTILINE: 0x20, PASSWORD: 0x10,
+  READ_ONLY: 0x08, HAS_TEXT_COLOR: 0x04, HAS_MAX_LENGTH: 0x02, HAS_FONT: 0x01,
+};
+const EDIT_FLAGS1 = {
+  HAS_FONT_CLASS: 0x80, AUTO_SIZE: 0x40, HAS_LAYOUT: 0x20, NO_SELECT: 0x10,
+  BORDER: 0x08, WAS_STATIC: 0x04, HTML: 0x02, USE_OUTLINES: 0x01,
+};
+const TEXT_ALIGN = { left: 0, right: 1, center: 2, justify: 3 };
+
+// options:
+//   multiline, wordWrap, html, border, password, selectable, autoSize (bools)
+//   align: 'left'|'right'|'center'|'justify'
+//   leftMargin/rightMargin/indent/leading: px (any of these forces a LAYOUT
+//     record, which `align` also requires)
+//   maxLength: number
+//
+// Defaults reproduce the original hard-coded flags exactly, so existing
+// callers that pass no options get byte-identical output.
+function defineEditText(charId, x1, y1, x2, y2, fontId, sizePx, text, color, varname = '', options = {}) {
+  const {
+    multiline = false, wordWrap = false, html = false, border = false,
+    password = false, selectable = false, autoSize = false, readOnly = true,
+    align = null, leftMargin = 0, rightMargin = 0, indent = 0, leading = 0,
+    maxLength = null, useOutlines = true,
+  } = options;
+
   const X1 = px(x1), Y1 = px(y1), X2 = px(x2), Y2 = px(y2);
-  const body = concatBytes(
-    u16le(charId),
-    encodeRect(X1, X2, Y1, Y2),
-    u8(0x8d, 0x11),
-    u16le(fontId), u16le(px(sizePx)),
-    rgba(color),
-    cstr(varname),
-    cstr(text)
-  );
+  const needLayout = align !== null || leftMargin || rightMargin || indent || leading;
+
+  let f0 = EDIT_FLAGS0.HAS_TEXT | EDIT_FLAGS0.HAS_TEXT_COLOR | EDIT_FLAGS0.HAS_FONT;
+  if (wordWrap) f0 |= EDIT_FLAGS0.WORD_WRAP;
+  if (multiline) f0 |= EDIT_FLAGS0.MULTILINE;
+  if (password) f0 |= EDIT_FLAGS0.PASSWORD;
+  if (readOnly) f0 |= EDIT_FLAGS0.READ_ONLY;
+  if (maxLength !== null) f0 |= EDIT_FLAGS0.HAS_MAX_LENGTH;
+
+  let f1 = 0;
+  if (useOutlines) f1 |= EDIT_FLAGS1.USE_OUTLINES;
+  if (!selectable) f1 |= EDIT_FLAGS1.NO_SELECT;
+  if (border) f1 |= EDIT_FLAGS1.BORDER;
+  if (html) f1 |= EDIT_FLAGS1.HTML;
+  if (autoSize) f1 |= EDIT_FLAGS1.AUTO_SIZE;
+  if (needLayout) f1 |= EDIT_FLAGS1.HAS_LAYOUT;
+
+  // Field order is fixed: flags, [font id + height], [colour], [max length],
+  // [layout], variable name, initial text.
+  let body = concatBytes(u16le(charId), encodeRect(X1, X2, Y1, Y2), u8(f0, f1));
+  body = concatBytes(body, u16le(fontId), u16le(px(sizePx)));
+  body = concatBytes(body, rgba(color));
+  if (maxLength !== null) body = concatBytes(body, u16le(maxLength));
+  if (needLayout) {
+    const a = align === null ? 0 : (TEXT_ALIGN[align] ?? 0);
+    body = concatBytes(body, u8(a),
+      u16le(px(leftMargin)), u16le(px(rightMargin)), u16le(px(indent)), u16le(px(leading)));
+  }
+  body = concatBytes(body, cstr(varname), cstr(text));
   return tag(37, body);
 }
 
@@ -1194,6 +1298,171 @@ function placeObject(charId, depth, matrix = IDENTITY_MATRIX) {
 
 function placeNamed(charId, depth, name, matrix = IDENTITY_MATRIX) {
   return tag(26, concatBytes(u8(0x26), u16le(depth), u16le(charId), matrix, cstr(name)));
+}
+
+// -- CXFORMWITHALPHA ---------------------------------------------------------
+//
+// Field order per GFxStream::ReadCxformRgba: HasAddTerms(1), HasMultTerms(1),
+// Nbits(4), then the multiply terms, then the add terms. Two details that are
+// easy to get backwards: the *add* flag is the first bit even though the
+// *mult* terms come first in the payload, and multiply factors are fixed-point
+// over 256, not 255 — the SDK comment is explicit that "multiply factor 1.0
+// has value 0x100, not 0xFF".
+//
+// mult: {r,g,b,a} as 0..1 multipliers (1 = unchanged)
+// add:  {r,g,b,a} as -255..255 offsets (0 = unchanged)
+function encodeCxform(mult = null, add = null) {
+  const m = mult ? [mult.r ?? 1, mult.g ?? 1, mult.b ?? 1, mult.a ?? 1].map(v => Math.round(v * 256)) : null;
+  const a = add ? [add.r ?? 0, add.g ?? 0, add.b ?? 0, add.a ?? 0].map(v => Math.round(v)) : null;
+  const w = new BitWriter();
+  const terms = [].concat(m || [], a || []);
+  const nb = terms.length ? sbitsNeeded(...terms) : 1;
+  w.ubits(a ? 1 : 0, 1).ubits(m ? 1 : 0, 1).ubits(nb, 4);
+  if (m) for (const v of m) w.sbits(v, nb);
+  if (a) for (const v of a) w.sbits(v, nb);
+  return w.flush();
+}
+
+// Convenience: a colour transform that only changes alpha, which is what HUD
+// work almost always wants (fading a panel in or out).
+function alphaCxform(alpha01) {
+  return encodeCxform({ r: 1, g: 1, b: 1, a: alpha01 }, null);
+}
+
+const PLACE = {
+  HAS_CLIP_ACTIONS: 0x01, HAS_CHARACTER: 0x02, HAS_MATRIX: 0x04,
+  HAS_COLOR_TRANSFORM: 0x08, HAS_RATIO: 0x10, HAS_NAME: 0x20,
+  HAS_CLIP_DEPTH: 0x40, MOVE: 0x80,
+};
+
+// Full PlaceObject2. Field order is fixed by the format:
+//   flags, depth, [charId], [matrix], [cxform], [ratio], [name], [clipDepth],
+//   [clipActions]
+//
+// `move: true` modifies whatever already sits at `depth` instead of placing
+// something new — that's how a timeline animates an existing object across
+// frames rather than replacing it.
+function placeObject2({
+  charId = null, depth, matrix = null, name = null, cxform = null,
+  ratio = null, clipDepth = null, clipActions = null, move = false,
+} = {}) {
+  let flags = 0;
+  if (move) flags |= PLACE.MOVE;
+  if (charId !== null) flags |= PLACE.HAS_CHARACTER;
+  if (matrix !== null) flags |= PLACE.HAS_MATRIX;
+  if (cxform !== null) flags |= PLACE.HAS_COLOR_TRANSFORM;
+  if (ratio !== null) flags |= PLACE.HAS_RATIO;
+  if (name !== null) flags |= PLACE.HAS_NAME;
+  if (clipDepth !== null) flags |= PLACE.HAS_CLIP_DEPTH;
+  if (clipActions !== null) flags |= PLACE.HAS_CLIP_ACTIONS;
+
+  let body = concatBytes(u8(flags), u16le(depth));
+  if (charId !== null) body = concatBytes(body, u16le(charId));
+  if (matrix !== null) body = concatBytes(body, matrix);
+  if (cxform !== null) body = concatBytes(body, cxform);
+  if (ratio !== null) body = concatBytes(body, u16le(ratio));
+  if (name !== null) body = concatBytes(body, cstr(name));
+  if (clipDepth !== null) body = concatBytes(body, u16le(clipDepth));
+  if (clipActions !== null) body = concatBytes(body, clipActions);
+  return tag(26, body);
+}
+
+// -- clip event handlers ------------------------------------------------------
+//
+// The bits below are GFx's own GFxEventId::Event_* constants. GFxSwfEvent::Read
+// assigns the wire flags straight into the event id (`Event = flags;`), so the
+// SDK enum *is* the wire format rather than something mapped onto it.
+//
+// This is how the shipped game movies build interactive UI: a movieclip placed
+// with onRelease/onRollOver handlers, rather than a DefineButton character.
+// Across the 42 sampled movies DefineButton appears 4 times in total, in one
+// file — clip handlers are the idiom the game actually uses.
+const CLIP_EVENT = {
+  load: 0x00001, enterFrame: 0x00002, unload: 0x00004,
+  mouseMove: 0x00008, mouseDown: 0x00010, mouseUp: 0x00020,
+  keyDown: 0x00040, keyUp: 0x00080, data: 0x00100, initialize: 0x00200,
+  press: 0x00400, release: 0x00800, releaseOutside: 0x01000,
+  rollOver: 0x02000, rollOut: 0x04000, dragOver: 0x08000, dragOut: 0x10000,
+  keyPress: 0x20000, construct: 0x40000,
+};
+
+// CLIPACTIONS block for placeObject2({clipActions}).
+//
+// Layout per GFxPlayerImpl.cpp's PO2_HasActions branch:
+//   reserved (u16 = 0)
+//   allFlags (u32) — the OR of every handler's flags
+//   per handler: flags (u32), length (u32), [keyCode u8 if keyPress], actions
+//   terminator (u32 = 0)
+//
+// The u32 (rather than u16) widths apply because that branch selects them for
+// movieVersion >= 6, and buildGfx writes version 8.
+//
+// handlers: [{ events: ['release', ...] | numeric mask, actions: Uint8Array,
+//              keyCode?: number }]
+function clipActions(handlers) {
+  const masks = handlers.map(h => {
+    if (typeof h.events === 'number') return h.events;
+    return h.events.reduce((acc, name) => {
+      if (!(name in CLIP_EVENT)) throw new Error(`unknown clip event ${JSON.stringify(name)}`);
+      return acc | CLIP_EVENT[name];
+    }, 0);
+  });
+  const all = masks.reduce((a, b) => a | b, 0);
+  let body = concatBytes(u16le(0), u32le(all));
+  handlers.forEach((h, i) => {
+    const mask = masks[i];
+    if (!mask) throw new Error('clip action handler has no events');
+    // every handler's action list is self-terminated, so the End byte is part
+    // of the measured length
+    const actions = concatBytes(h.actions, u8(0));
+    const withKey = (mask & CLIP_EVENT.keyPress)
+      ? concatBytes(u8(h.keyCode & 0xff), actions)
+      : actions;
+    body = concatBytes(body, u32le(mask), u32le(withKey.length), withKey);
+  });
+  return concatBytes(body, u32le(0));
+}
+
+// -- timeline ----------------------------------------------------------------
+
+// FrameLabel (43). GFx's GotoLabel does NOT parse numbers out of a label, so a
+// label of "4" is a label named "4" and not frame 4 — worth knowing before
+// naming frames numerically.
+function frameLabel(name) {
+  return tag(43, cstr(name));
+}
+
+// RemoveObject2 (28): clears whatever is at `depth`. Needed whenever content
+// present on one frame is absent on the next — a placed object otherwise
+// persists down the timeline until something removes it.
+function removeObject2(depth) {
+  return tag(28, u16le(depth));
+}
+
+// ExportAssets (56): gives characters public names so script can reach them
+// with attachMovie()/loadMovie(). Used heavily by the shipped game movies
+// (1,516 entries across 23 of the 42 sampled).
+// entries: [{ id, name }]
+function exportAssets(entries) {
+  let body = u16le(entries.length);
+  for (const e of entries) body = concatBytes(body, u16le(e.id), cstr(e.name));
+  return tag(56, body);
+}
+
+// DoInitAction (59): actions that run once, when the sprite's character is
+// first defined, rather than every time its frame is entered.
+function doInitAction(spriteId, avm1Body) {
+  return tag(59, concatBytes(u16le(spriteId), avm1Body));
+}
+
+// DefineScale9Grid (78): marks the 9-slice guides on an already-defined
+// character, so corners keep their size while edges and centre stretch. Body
+// is the character id followed by a RECT giving the inner rectangle, in twips.
+function defineScale9Grid(charId, left, top, right, bottom) {
+  return tag(78, concatBytes(
+    u16le(charId),
+    encodeRect(px(left), px(right), px(top), px(bottom))
+  ));
 }
 
 const BTN_UP = 0x01, BTN_OVER = 0x02, BTN_DOWN = 0x04, BTN_HIT = 0x08;
@@ -1221,9 +1490,9 @@ const END = tag(0, u8());
 
 // --- container -----------------------------------------------------------
 
-function buildGfx(stageW, stageH, fps, bodyTags) {
+function buildGfx(stageW, stageH, fps, bodyTags, frameCount = 1) {
   let body = encodeRect(0, px(stageW), 0, px(stageH));
-  body = concatBytes(body, u16le(Math.trunc(fps) << 8), u16le(1), bodyTags);
+  body = concatBytes(body, u16le(Math.trunc(fps) << 8), u16le(Math.max(1, frameCount)), bodyTags);
   return concatBytes(latin1('GFX'), u8(8), u32le(8 + body.length), body);
 }
 
@@ -1232,6 +1501,20 @@ const api = {
   defineShape3, defineShapeEx, defineEditText, placeObject, placeNamed,
   BTN_UP, BTN_OVER, BTN_DOWN, BTN_HIT, defineButton, defineSprite,
   doAction, SHOW_FRAME, END, buildGfx, IDENTITY_MATRIX,
+
+  // timeline + structure
+  placeObject2, PLACE, frameLabel, removeObject2, exportAssets, doInitAction,
+  defineScale9Grid,
+
+  // clip event handlers
+  clipActions, CLIP_EVENT,
+
+  // colour transforms
+  encodeCxform, alphaCxform,
+
+  // text flags
+  EDIT_FLAGS0, EDIT_FLAGS1, TEXT_ALIGN,
+
   _internal: { concatBytes, u8, u16le, i32le, u32le, latin1, cstr },
 };
 
@@ -1244,43 +1527,156 @@ const Avm1 = (function() {
 // Port of gfxforge/avm1.py — AVM1 (ActionScript 1/2) bytecode assembler.
 // GFx 2.x runs AVM1: define functions the host can call, bind variables that
 // text fields display, and fscommand back out to the host.
+//
+// The opcode set below is the one GFx 2.1.57 actually implements — taken from
+// the action dispatch switch in the SDK's GFxPlayer/GFxAction.cpp, not from
+// the general SWF spec. Two consequences worth knowing:
+//   * 0x8F (try) hits the "Unsupported opcode" branch in that player, so this
+//     assembler deliberately has no try/catch encoder. 0x2A (throw) exists but
+//     is useless without it.
+//   * ActionPush's double type has a non-obvious byte order — see doublele().
 
 const { concatBytes, u8, u16le, i32le, cstr } = Swf._internal;
 
-// opcodes with no payload
-const GET_VARIABLE = u8(0x1c);
-const SET_VARIABLE = u8(0x1d);
-const GET_MEMBER = u8(0x4e);
-const SET_MEMBER = u8(0x4f);
-const ADD2 = u8(0x47);
+// -- opcodes with no payload (single-byte actions, < 0x80) -------------------
+// Names follow the SDK's own comments in GFxAction.cpp's dispatch switch.
+
+const NEXT_FRAME = u8(0x04);
+const PREV_FRAME = u8(0x05);
+const PLAY = u8(0x06);
+const STOP = u8(0x07);
+const TOGGLE_QUALITY = u8(0x08);
+const STOP_SOUNDS = u8(0x09);
+const ADD = u8(0x0a);           // legacy numeric add; ADD2 is the typed one
 const SUBTRACT = u8(0x0b);
 const MULTIPLY = u8(0x0c);
 const DIVIDE = u8(0x0d);
-const MODULO = u8(0x3f);
-const LESS2 = u8(0x48);
-const EQUALS2 = u8(0x49);
-const GREATER = u8(0x67);
+const EQUALS = u8(0x0e);        // legacy; EQUALS2 is the typed one
+const LESS = u8(0x0f);          // legacy; LESS2 is the typed one
 const AND = u8(0x10);
 const OR = u8(0x11);
 const NOT = u8(0x12);
+const STRING_EQUALS = u8(0x13);
+const STRING_LENGTH = u8(0x14);
+const STRING_EXTRACT = u8(0x15);
 const POP = u8(0x17);
-const RETURN = u8(0x3e);
+const TO_INTEGER = u8(0x18);
+const GET_VARIABLE = u8(0x1c);
+const SET_VARIABLE = u8(0x1d);
+const SET_TARGET2 = u8(0x20);
+const STRING_ADD = u8(0x21);
+const GET_PROPERTY = u8(0x22);
+const SET_PROPERTY = u8(0x23);
+const CLONE_SPRITE = u8(0x24);
+const REMOVE_SPRITE = u8(0x25);
+const TRACE = u8(0x26);
+const START_DRAG = u8(0x27);
+const END_DRAG = u8(0x28);
+const STRING_LESS = u8(0x29);
+const THROW = u8(0x2a);         // present, but 0x8F (try) is not — see header
+const CAST_OP = u8(0x2b);
+const IMPLEMENTS_OP = u8(0x2c);
+const RANDOM = u8(0x30);
+const MB_STRING_LENGTH = u8(0x31);
+const CHAR_TO_ASCII = u8(0x32);
+const ASCII_TO_CHAR = u8(0x33);
+const GET_TIMER = u8(0x34);
+const MB_STRING_EXTRACT = u8(0x35);
+const MB_CHAR_TO_ASCII = u8(0x36);
+const MB_ASCII_TO_CHAR = u8(0x37);
+const DELETE = u8(0x3a);
+const DELETE2 = u8(0x3b);
+const DEFINE_LOCAL = u8(0x3c);   // pop value, pop name -> declare in local frame
 const CALL_FUNCTION = u8(0x3d);
-const CALL_METHOD = u8(0x52);
+const RETURN = u8(0x3e);
+const MODULO = u8(0x3f);
+const NEW_OBJECT = u8(0x40);
+const DEFINE_LOCAL2 = u8(0x41);  // pop name -> declare undefined local
 const INIT_ARRAY = u8(0x42);
+const INIT_OBJECT = u8(0x43);
+const TYPE_OF = u8(0x44);
+const TARGET_PATH = u8(0x45);
+const ENUMERATE = u8(0x46);
+const ADD2 = u8(0x47);
+const LESS2 = u8(0x48);
+const EQUALS2 = u8(0x49);
+const TO_NUMBER = u8(0x4a);
+const TO_STRING = u8(0x4b);
+const PUSH_DUPLICATE = u8(0x4c);
+const STACK_SWAP = u8(0x4d);
+const GET_MEMBER = u8(0x4e);
+const SET_MEMBER = u8(0x4f);
+const INCREMENT = u8(0x50);
+const DECREMENT = u8(0x51);
+const CALL_METHOD = u8(0x52);
+const NEW_METHOD = u8(0x53);
+const INSTANCE_OF = u8(0x54);
+const ENUMERATE2 = u8(0x55);
+const BIT_AND = u8(0x60);
+const BIT_OR = u8(0x61);
+const BIT_XOR = u8(0x62);
+const BIT_LSHIFT = u8(0x63);
+const BIT_RSHIFT = u8(0x64);
+const BIT_URSHIFT = u8(0x65);
+const STRICT_EQUALS = u8(0x66);
+const GREATER = u8(0x67);
+const STRING_GREATER = u8(0x68);
+const EXTENDS = u8(0x69);
 const END = u8(0x00);
 
+// GetProperty/SetProperty take a numeric property index rather than a name.
+// Order is fixed by the format; GFx resolves them in GFxAction.cpp's
+// GASValue GetStandardMember path.
+const PROPERTY = {
+  _x: 0, _y: 1, _xscale: 2, _yscale: 3, _currentframe: 4, _totalframes: 5,
+  _alpha: 6, _visible: 7, _width: 8, _height: 9, _rotation: 10, _target: 11,
+  _framesloaded: 12, _name: 13, _droptarget: 14, _url: 15, _highquality: 16,
+  _focusrect: 17, _soundbuftime: 18, _quality: 19, _xmouse: 20, _ymouse: 21,
+};
+
+// ActionPush's double type. NOT a plain little-endian float64: GFx reads the
+// two 32-bit halves swapped —
+//     memcpy(&u.Sub.Hi, &Buffer[3+i],     4);
+//     memcpy(&u.Sub.Lo, &Buffer[3+i + 4], 4);
+// (GFxAction.cpp, case 0x96, type 6; its own comment calls the layout
+// "wacky format: 45670123"). So the high word goes on the wire first.
+//
+// Confirmed empirically against 15,512 type-6 pushes in the shipped Mercs 2
+// movies: read word-swapped they decode to authoring values (0.25, 2.5, 12.5,
+// 59.5); read as a plain LE double the same bytes decode to denormal garbage
+// around 5.3e-315. 0.25 encodes to `00 00 d0 3f 00 00 00 00`, byte-identical
+// to what the game's own files contain.
 function doublele(v) {
-  const b = new Uint8Array(8);
-  new DataView(b.buffer).setFloat64(0, v, true);
+  const le = new Uint8Array(8);
+  new DataView(le.buffer).setFloat64(0, v, true);
+  const out = new Uint8Array(8);
+  out.set(le.subarray(4, 8), 0);  // high word first
+  out.set(le.subarray(0, 4), 4);  // then low word
+  return out;
+}
+
+function f32le(v) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setFloat32(0, v, true);
   return b;
 }
 
+// Wrappers so push() can emit the value types that aren't representable as
+// plain JS values: register reads (type 4) and constant-pool refs (8/16).
+function reg(n) { return { __push: 'register', n }; }
+function constant(index) { return { __push: 'constant', index }; }
+const NULL = { __push: 'null' };
+const UNDEFINED = { __push: 'undefined' };
+const FLOAT = (v) => ({ __push: 'float', v });
+
 // ActionPush. Accepts string (type 0), boolean (5), whole-number (7, i32),
-// non-whole number (6, f64). JS has no separate int/float type, so — matching
-// how gfxforge's own callers already decide (compiler.py normalises whole
-// literals to Python `int` before pushing) — integral JS numbers encode as
-// SWF INTEGER and non-integral ones as SWF DOUBLE.
+// non-whole number (6, f64), plus the wrapper types above: null (2),
+// undefined (3), register (4), constant8/16 (8/9), float32 (1).
+//
+// JS has no separate int/float type, so — matching how gfxforge's own callers
+// already decide (compiler.py normalises whole literals to Python `int` before
+// pushing) — integral JS numbers encode as SWF INTEGER and non-integral ones
+// as SWF DOUBLE.
 function push(...values) {
   let body = new Uint8Array(0);
   for (const v of values) {
@@ -1294,11 +1690,92 @@ function push(...values) {
       } else {
         body = concatBytes(body, u8(0x06), doublele(v));
       }
+    } else if (v && typeof v === 'object' && v.__push) {
+      switch (v.__push) {
+        case 'null': body = concatBytes(body, u8(0x02)); break;
+        case 'undefined': body = concatBytes(body, u8(0x03)); break;
+        case 'float': body = concatBytes(body, u8(0x01), f32le(v.v)); break;
+        case 'register': body = concatBytes(body, u8(0x04), u8(v.n & 0xff)); break;
+        case 'constant':
+          body = v.index < 256
+            ? concatBytes(body, u8(0x08), u8(v.index))
+            : concatBytes(body, u8(0x09), u16le(v.index));
+          break;
+        default: throw new TypeError(`push: unsupported wrapper ${v.__push}`);
+      }
     } else {
       throw new TypeError(`push: unsupported value ${JSON.stringify(v)}`);
     }
   }
   return concatBytes(u8(0x96), u16le(body.length), body);
+}
+
+// -- multi-byte actions (>= 0x80): [opcode][u16 length][body] ----------------
+
+function action(opcode, body = new Uint8Array(0)) {
+  return concatBytes(u8(opcode), u16le(body.length), body);
+}
+
+function gotoFrame(frame) {          // 0x81, zero-based frame index
+  return action(0x81, u16le(frame));
+}
+
+function getUrl(url, target) {       // 0x83
+  return action(0x83, concatBytes(cstr(url), cstr(target)));
+}
+
+// 0x87. Inside a DefineFunction2 the index selects one of that function's
+// local registers; at top level only 0-3 (the global registers) are valid —
+// GFx logs "register out of bounds" otherwise.
+function storeRegister(index) {
+  return action(0x87, u8(index & 0xff));
+}
+
+// 0x88 ConstantPool: u16 count then that many NUL-terminated strings. Entries
+// are then referenced by push(constant(i)), which costs 2-3 bytes instead of
+// re-emitting the whole string each time.
+function constantPool(strings) {
+  let body = u16le(strings.length);
+  for (const s of strings) body = concatBytes(body, cstr(s));
+  return action(0x88, body);
+}
+
+function waitForFrame(frame, skipCount) {   // 0x8a
+  return action(0x8a, concatBytes(u16le(frame), u8(skipCount)));
+}
+
+function setTarget(name) {           // 0x8b
+  return action(0x8b, cstr(name));
+}
+
+// 0x8c. Note GFx does NOT parse numbers out of this string — "4" is treated as
+// a label named "4", not frame 4 (see the comment on case 0x8C in
+// GFxAction.cpp). Use gotoFrame() for numeric targets.
+function gotoLabel(label) {
+  return action(0x8c, cstr(label));
+}
+
+function waitForFrame2(skipCount) {  // 0x8d
+  return action(0x8d, u8(skipCount));
+}
+
+// 0x9f GotoFrame2: pops the frame (number or "path:label" string). Bit 0 of
+// the flag byte selects play-on-arrival vs stop; bit 1 adds a u16 scene bias.
+function gotoFrame2(play = false, sceneBias = null) {
+  let flags = play ? 1 : 0;
+  if (sceneBias !== null) flags |= 2;
+  const body = sceneBias !== null
+    ? concatBytes(u8(flags), u16le(sceneBias))
+    : u8(flags);
+  return action(0x9f, body);
+}
+
+function callFrame() {               // 0x9e
+  return action(0x9e);
+}
+
+function withBlock(bodyBytes) {      // 0x94: [u16 code size] then the block
+  return concatBytes(action(0x94, u16le(bodyBytes.length)), bodyBytes);
 }
 
 function getUrl2(flags = 0) {
@@ -1314,6 +1791,37 @@ function defineFunction(name, params, body) {
   for (const p of params) hdr = concatBytes(hdr, cstr(p));
   hdr = concatBytes(hdr, u16le(body.length));
   return concatBytes(u8(0x9b), u16le(hdr.length), hdr, body);
+}
+
+// Flags controlling which implicit values GFx preloads into registers (and
+// which it suppresses from the local frame) for a DefineFunction2 body.
+// Values from GFxAction.cpp's Function2 flag handling.
+const FN2 = {
+  PRELOAD_THIS: 0x0001, SUPPRESS_THIS: 0x0002,
+  PRELOAD_ARGUMENTS: 0x0004, SUPPRESS_ARGUMENTS: 0x0008,
+  PRELOAD_SUPER: 0x0010, SUPPRESS_SUPER: 0x0020,
+  PRELOAD_ROOT: 0x0040, PRELOAD_PARENT: 0x0080, PRELOAD_GLOBAL: 0x0100,
+};
+
+// ActionDefineFunction2 (0x8e). Same shape as DefineFunction plus a register
+// budget and per-parameter register assignments, so a function body can read
+// its arguments straight out of registers instead of by name.
+//
+// Header layout, per GFxAction.cpp case 0x8E:
+//   name (cstring), nargs (u16), registerCount (u8), flags (u16),
+//   then per arg: register (u8) + name (cstring), then codeSize (u16).
+// A register of 0 means "not in a register, bind by name" — otherwise the
+// argument is preloaded into that register and NOT added to the local frame.
+//
+// `params` accepts plain strings (register 0) or {name, register} objects.
+function defineFunction2(name, params, body, { registerCount = null, flags = 0 } = {}) {
+  const norm = params.map(p => (typeof p === 'string' ? { name: p, register: 0 } : p));
+  const maxReg = norm.reduce((m, p) => Math.max(m, p.register || 0), 0);
+  const regs = registerCount === null ? maxReg + 1 : registerCount;
+  let hdr = concatBytes(cstr(name), u16le(norm.length), u8(regs), u16le(flags));
+  for (const p of norm) hdr = concatBytes(hdr, u8(p.register || 0), cstr(p.name));
+  hdr = concatBytes(hdr, u16le(body.length));
+  return concatBytes(u8(0x8e), u16le(hdr.length), hdr, body);
 }
 
 // --- convenience expression/statement fragments -----------------------------
@@ -1347,6 +1855,25 @@ function fscommand(command, value) {
   return concatBytes(push('FSCommand:' + command), value, getUrl2(0));
 }
 
+// _root.<clip>.gotoAndStop(<frame>) and friends, as a ready-made fragment.
+// `frame` may be a label string or a 1-based frame number, matching AS2.
+function clipGoto(clipName, frame, play = false) {
+  return concatBytes(
+    push(frame),
+    push(1),
+    getMember(root(), clipName),
+    push(play ? 'gotoAndPlay' : 'gotoAndStop'),
+    CALL_METHOD,
+    POP
+  );
+}
+
+// trace(<expr>) — writes to the GFx log. Handy for debugging a movie in-engine
+// with a log-enabled build; a no-op in the retail player.
+function traceValue(valueBytes) {
+  return concatBytes(valueBytes, TRACE);
+}
+
 class Script {
   constructor() {
     this._b = new Uint8Array(0);
@@ -1377,11 +1904,41 @@ class Script {
 }
 
 const api = {
+  // original exports — unchanged names and values
   GET_VARIABLE, SET_VARIABLE, GET_MEMBER, SET_MEMBER, ADD2, SUBTRACT, MULTIPLY,
   DIVIDE, MODULO, LESS2, EQUALS2, GREATER, AND, OR, NOT, POP, RETURN,
   CALL_FUNCTION, CALL_METHOD, INIT_ARRAY, END,
   push, getUrl2, defineFunction, var: v, literal, root, getMember, setMember,
   setRoot, fscommand, Script,
+
+  // timeline / playback
+  NEXT_FRAME, PREV_FRAME, PLAY, STOP, TOGGLE_QUALITY, STOP_SOUNDS,
+  gotoFrame, gotoLabel, gotoFrame2, callFrame, waitForFrame, waitForFrame2,
+
+  // arithmetic, comparison, logic
+  ADD, EQUALS, LESS, STRICT_EQUALS, TO_INTEGER, TO_NUMBER, TO_STRING,
+  INCREMENT, DECREMENT, RANDOM, GET_TIMER,
+  BIT_AND, BIT_OR, BIT_XOR, BIT_LSHIFT, BIT_RSHIFT, BIT_URSHIFT,
+
+  // strings
+  STRING_EQUALS, STRING_LENGTH, STRING_EXTRACT, STRING_ADD, STRING_LESS,
+  STRING_GREATER, CHAR_TO_ASCII, ASCII_TO_CHAR,
+  MB_STRING_LENGTH, MB_STRING_EXTRACT, MB_CHAR_TO_ASCII, MB_ASCII_TO_CHAR,
+
+  // objects, scope, functions
+  DEFINE_LOCAL, DEFINE_LOCAL2, NEW_OBJECT, NEW_METHOD, INIT_OBJECT, TYPE_OF,
+  INSTANCE_OF, ENUMERATE, ENUMERATE2, DELETE, DELETE2, EXTENDS, CAST_OP,
+  IMPLEMENTS_OP, THROW, TARGET_PATH, PUSH_DUPLICATE, STACK_SWAP,
+  defineFunction2, FN2, storeRegister, constantPool, withBlock,
+  setTarget, SET_TARGET2,
+
+  // display objects
+  GET_PROPERTY, SET_PROPERTY, PROPERTY, CLONE_SPRITE, REMOVE_SPRITE,
+  START_DRAG, END_DRAG, TRACE,
+
+  // push value wrappers + raw encoders
+  reg, constant, NULL, UNDEFINED, FLOAT, action, getUrl,
+  clipGoto, traceValue,
 };
 
   return api;
@@ -1392,18 +1949,30 @@ const api = {
 const Compiler = (function() {
 // Port + extension of gfxforge/compiler.py — an AS2-subset -> AVM1 compiler.
 //
-// Supported: number/string/bool/null/undefined/array literals; variables;
-// obj.member / obj[key]; unary - !; binary + - * / % < > <= >= == != && ||;
-// compound assignment += -= *= /= %=; calls f(a,b) and methods o.m(a);
-// fscommand("evt", x); assignment; if/else, while, for(;;), break, continue,
-// function name(params){...}, return.
+// Literals: number (decimal + hex), string, bool, null, undefined, array,
+// object. Expressions: variables, `this`, obj.member, obj[key], calls f(a,b)
+// and methods o.m(a), `new C(a)`, function expressions, ternary ?:, and the
+// unary/binary operator set below. Statements: assignment (plain and
+// compound), if/else, while, do/while, for(;;), for-in, switch/case/default,
+// break, continue, var, function declarations, return, and fscommand("evt", x).
 //
-// Known limits: && / || are NOT short-circuit; calls are by name (or
-// method); no object literals; `for` only supports the classic three-clause
-// form (no for-in); parser/tokenizer errors include line/column, but errors
-// raised during code generation (e.g. "break outside of a loop") do not, since
-// that would require threading position info through every AST node rather
-// than just tokens.
+// Operators: unary - + ! ~ typeof delete; binary + - * / % < > <= >= == !=
+// === !== && || & | ^ << >> >>> instanceof; prefix/postfix ++ --; compound
+// assignment += -= *= /= %= &= |= ^= <<= >>= >>>=.
+//
+// Deliberately absent: try/catch/throw. GFx 2.1.57 routes opcode 0x8F (try)
+// to its "Unsupported opcode" branch (GFxAction.cpp), so emitting it would
+// produce a movie that logs an error and silently skips the handler. 0x2A
+// (throw) exists but is useless on its own.
+//
+// Known limits: calls are by name or method (no calling an arbitrary
+// expression result without going through a variable); `break` inside
+// switch/for-in leaves the discriminant/enumeration on the AVM1 stack, which
+// is harmless because the stack is per-action-buffer and reset at its end, but
+// it is not a tidy unwind; parser/tokenizer errors include line/column, but
+// errors raised during code generation (e.g. "break outside of a loop") do
+// not, since that would require threading position info through every AST node
+// rather than just tokens.
 
 const avm1 = Avm1;
 const NOT = avm1.NOT;
@@ -1472,26 +2041,67 @@ class Assembler {
 // --- lexer -------------------------------------------------------------------
 
 const KEYWORDS = new Set(['if', 'else', 'while', 'for', 'break', 'continue',
-  'function', 'return', 'var', 'true', 'false', 'null', 'undefined']);
+  'function', 'return', 'var', 'true', 'false', 'null', 'undefined',
+  'do', 'switch', 'case', 'default', 'new', 'delete', 'typeof', 'instanceof',
+  'this', 'in']);
 
 // Order mirrors the Python regex alternation: whitespace/comment, number,
-// string, name, operator. First match wins at each position. Compound
-// assignment ops must come before the single-char class so e.g. "+=" isn't
-// split into "+" then "=".
-const TOKEN_RE = /(\s+|\/\/[^\n]*)|(\d+\.\d+|\d+)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|([A-Za-z_$][A-Za-z0-9_$]*)|(<=|>=|==|!=|&&|\|\||\+=|-=|\*=|\/=|%=|[-+*/%<>=!.,(){}\[\];])/y;
+// string, name, operator. First match wins at each position.
+//
+// Two ordering constraints inside the operator class: longer operators must
+// precede their prefixes (">>>=" before ">>>" before ">>" before ">"; "===" before
+// "=="; "&&" before "&"), and all compound-assignment forms must precede the
+// single-char class so e.g. "+=" isn't split into "+" then "=".
+//
+// Comments cover both // to end-of-line and /* ... */ block form. The block
+// form is non-greedy so two comments on one line don't merge into one.
+const TOKEN_RE = /(\s+|\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(0[xX][0-9a-fA-F]+|\d+\.\d+|\.\d+|\d+)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|([A-Za-z_$][A-Za-z0-9_$]*)|(>>>=|>>>|>>=|<<=|===|!==|>>|<<|<=|>=|==|!=|&&|\|\||\+\+|--|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|[-+*/%<>=!.,(){}\[\];?:&|^~])/y;
 
 function unescape(s) {
-  // Mirrors Python's body.replace(...).replace(...)... chain exactly: four
-  // sequential global literal-substring replace passes, in this order. (Not
-  // the same as a single left-to-right scan — e.g. the \\ pass runs last, so
-  // an already-produced \n from the \n pass is never re-touched by it.)
+  // Extends the Python original's four sequential replace passes with the
+  // remaining C-style escapes AS2 accepts. Done as a single left-to-right scan
+  // rather than chained replaces, because chained passes mis-handle sequences
+  // that a previous pass just produced (the original's \\ pass running last
+  // was a deliberate workaround for exactly that).
+  //
+  // \xNN and \uNNNN are accepted, but codepoints above 255 will be rejected
+  // later by swf.js's latin1() — GFx strings here are single-byte.
   const q = s[0];
-  let body = s.slice(1, -1);
-  body = body.split('\\' + q).join(q);
-  body = body.split('\\n').join('\n');
-  body = body.split('\\t').join('\t');
-  body = body.split('\\\\').join('\\');
-  return body;
+  const body = s.slice(1, -1);
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== '\\') { out += c; continue; }
+    const n = body[++i];
+    if (n === undefined) { out += '\\'; break; }
+    switch (n) {
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      case 'r': out += '\r'; break;
+      case 'b': out += '\b'; break;
+      case 'f': out += '\f'; break;
+      case '0': out += '\0'; break;
+      case '\\': out += '\\'; break;
+      case 'x': {
+        const h = body.substr(i + 1, 2);
+        if (/^[0-9a-fA-F]{2}$/.test(h)) { out += String.fromCharCode(parseInt(h, 16)); i += 2; }
+        else out += 'x';
+        break;
+      }
+      case 'u': {
+        const h = body.substr(i + 1, 4);
+        if (/^[0-9a-fA-F]{4}$/.test(h)) { out += String.fromCharCode(parseInt(h, 16)); i += 4; }
+        else out += 'u';
+        break;
+      }
+      default: out += n; break;   // covers \" \' and any unknown escape
+    }
+  }
+  return out;
+}
+
+function parseNumber(text) {
+  return /^0[xX]/.test(text) ? parseInt(text, 16) : parseFloat(text);
 }
 
 function tokenize(text) {
@@ -1517,7 +2127,7 @@ function tokenize(text) {
     advance(full);
     if (ws !== undefined) continue;
     if (num !== undefined) {
-      toks.push(['num', parseFloat(num), startLine, startCol]);
+      toks.push(['num', parseNumber(num), startLine, startCol]);
     } else if (str !== undefined) {
       toks.push(['str', unescape(str), startLine, startCol]);
     } else if (name !== undefined) {
@@ -1532,8 +2142,48 @@ function tokenize(text) {
 
 // --- parser (recursive descent + precedence climbing) ------------------------
 
-const PREC = { '||': 1, '&&': 2, '==': 3, '!=': 3, '<': 4, '>': 4, '<=': 4, '>=': 4,
-  '+': 5, '-': 5, '*': 6, '/': 6, '%': 6 };
+// Binding power, loosest first. Mirrors ECMAScript/AS2 precedence: the
+// original table's levels are preserved in relative order, with the bitwise
+// and shift levels slotted in between equality and the arithmetic levels
+// where the language puts them. Ternary sits below everything here and is
+// handled separately in expression(), since it is right-associative and
+// three-part rather than a simple binary rung.
+const PREC = {
+  '||': 1, '&&': 2,
+  '|': 3, '^': 4, '&': 5,
+  '==': 6, '!=': 6, '===': 6, '!==': 6,
+  '<': 7, '>': 7, '<=': 7, '>=': 7, 'instanceof': 7, 'in': 7,
+  '<<': 8, '>>': 8, '>>>': 8,
+  '+': 9, '-': 9,
+  '*': 10, '/': 10, '%': 10,
+};
+
+const COMPOUND_OPS = {
+  '+=': '+', '-=': '-', '*=': '*', '/=': '/', '%=': '%',
+  '&=': '&', '|=': '|', '^=': '^', '<<=': '<<', '>>=': '>>', '>>>=': '>>>',
+};
+
+// An expression is "pure" if evaluating it twice is indistinguishable from
+// evaluating it once — no calls, no ++/--, no assignment, no `new`. Used by
+// compound assignment to decide whether it can simply re-emit the target's
+// subexpressions or has to stash them in a register first.
+function isPure(node) {
+  if (!Array.isArray(node)) return true;
+  switch (node[0]) {
+    case 'num': case 'str': case 'bool': case 'null': case 'undef':
+    case 'var': case 'this':
+      return true;
+    case 'member': return isPure(node[1]);
+    case 'index': return isPure(node[1]) && isPure(node[2]);
+    case 'unop': return node[1] !== 'delete' && isPure(node[2]);
+    case 'binop': return isPure(node[2]) && isPure(node[3]);
+    case 'logical': return isPure(node[2]) && isPure(node[3]);
+    case 'ternary': return isPure(node[1]) && isPure(node[2]) && isPure(node[3]);
+    case 'array': return node[1].every(isPure);
+    case 'object': return node[1].every(p => isPure(p.value));
+    default: return false;   // call, new, update, assign, function, ...
+  }
+}
 
 class Parser {
   constructor(toks) {
@@ -1572,29 +2222,43 @@ class Parser {
     return out;
   }
 
+  // A statement body that may be either a braced block or a single statement,
+  // so `if (x) doThing();` works without braces. Always returns a statement
+  // array so callers can treat both forms identically.
+  body() {
+    if (this._at('op', '{')) return this.block();
+    if (this._at('op', ';')) { this._next(); return []; }
+    return [this.statement()];
+  }
+
   statement() {
     let [k, v] = this._peek();
+    if (k === 'op' && v === '{') return ['block', this.block()];
+    if (k === 'op' && v === ';') { this._next(); return ['block', []]; }
     if (k === 'kw' && v === 'if') return this._if();
     if (k === 'kw' && v === 'while') {
       this._next(); this._eat('op', '(');
       const c = this.expression();
       this._eat('op', ')');
-      return ['while', c, this.block()];
+      return ['while', c, this.body()];
+    }
+    if (k === 'kw' && v === 'do') {
+      this._next();
+      const b = this.body();
+      this._eat('kw', 'while'); this._eat('op', '(');
+      const c = this.expression();
+      this._eat('op', ')');
+      if (this._at('op', ';')) this._next();
+      return ['dowhile', c, b];
     }
     if (k === 'kw' && v === 'for') return this._for();
+    if (k === 'kw' && v === 'switch') return this._switch();
     if (k === 'kw' && v === 'break') { this._next(); this._eat('op', ';'); return ['break']; }
     if (k === 'kw' && v === 'continue') { this._next(); this._eat('op', ';'); return ['continue']; }
     if (k === 'kw' && v === 'function') {
       this._next();
       const name = this._eat('name');
-      this._eat('op', '(');
-      const params = [];
-      if (!this._at('op', ')')) {
-        params.push(this._eat('name'));
-        while (this._at('op', ',')) { this._next(); params.push(this._eat('name')); }
-      }
-      this._eat('op', ')');
-      return ['func', name, params, this.block()];
+      return ['func', name, this._params(), this.block()];
     }
     if (k === 'kw' && v === 'return') {
       this._next();
@@ -1603,14 +2267,7 @@ class Parser {
       this._eat('op', ';');
       return ['return', e];
     }
-    if (k === 'kw' && v === 'var') {
-      this._next();
-      const name = this._eat('name');
-      this._eat('op', '=');
-      const e = this.expression();
-      this._eat('op', ';');
-      return ['assign', ['var', name], e];
-    }
+    if (k === 'kw' && v === 'var') return this._varDecl(true);
     // expression statement, assignment, or compound assignment
     const e = this.expression();
     const node = this._assignmentFrom(e);
@@ -1618,23 +2275,80 @@ class Parser {
     return node;
   }
 
+  _params() {
+    this._eat('op', '(');
+    const params = [];
+    if (!this._at('op', ')')) {
+      params.push(this._eat('name'));
+      while (this._at('op', ',')) { this._next(); params.push(this._eat('name')); }
+    }
+    this._eat('op', ')');
+    return params;
+  }
+
+  // `var a = 1, b, c = 3;` — each declarator becomes its own node. A
+  // declarator with no initializer still emits (DefineLocal2) so the name is
+  // reserved in the local frame rather than silently resolving to _root.
+  _varDecl(eatSemi) {
+    this._eat('kw', 'var');
+    const decls = [];
+    for (;;) {
+      const name = this._eat('name');
+      if (this._at('op', '=')) {
+        this._next();
+        decls.push(['vardecl', name, this.expression()]);
+      } else {
+        decls.push(['vardecl', name, null]);
+      }
+      if (this._at('op', ',')) { this._next(); continue; }
+      break;
+    }
+    if (eatSemi) this._eat('op', ';');
+    return decls.length === 1 ? decls[0] : ['block', decls];
+  }
+
+  _switch() {
+    this._eat('kw', 'switch'); this._eat('op', '(');
+    const disc = this.expression();
+    this._eat('op', ')'); this._eat('op', '{');
+    const cases = [];   // {test: expr|null (default), body: [stmt]}
+    while (!this._at('op', '}')) {
+      let test = null;
+      if (this._at('kw', 'default')) { this._next(); }
+      else { this._eat('kw', 'case'); test = this.expression(); }
+      this._eat('op', ':');
+      const body = [];
+      while (!this._at('op', '}') && !this._at('kw', 'case') && !this._at('kw', 'default')) {
+        body.push(this.statement());
+      }
+      cases.push({ test, body });
+    }
+    this._eat('op', '}');
+    return ['switch', disc, cases];
+  }
+
   // Given an already-parsed expression `e`, checks for a following `=` or
   // compound-assignment operator and returns the right statement node —
   // otherwise just wraps `e` as an expression-statement. Shared by plain
   // statements and by for(...)'s init/update clauses (which don't have their
   // own trailing `;`/`)` to consume, so the caller handles that).
+  // Given an already-parsed expression `e`, checks for a following `=` or
+  // compound-assignment operator. Compound forms keep the operator and target
+  // as-is rather than desugaring to ['assign', e, ['binop', op, e, rhs]] —
+  // that desugaring duplicated the target node, so a target with side effects
+  // (`a[next()] += 1`) evaluated them twice. Codegen expands it instead, where
+  // it can arrange to evaluate the target exactly once.
   _assignmentFrom(e) {
-    const compound = { '+=': '+', '-=': '-', '*=': '*', '/=': '/', '%=': '%' };
     const [k, v] = this._peek();
     if (k === 'op' && v === '=') {
       this._next();
       const rhs = this.expression();
       return ['assign', e, rhs];
     }
-    if (k === 'op' && Object.prototype.hasOwnProperty.call(compound, v)) {
+    if (k === 'op' && Object.prototype.hasOwnProperty.call(COMPOUND_OPS, v)) {
       this._next();
       const rhs = this.expression();
-      return ['assign', e, ['binop', compound[v], e, rhs]];
+      return ['compound', COMPOUND_OPS[v], e, rhs];
     }
     return ['expr', e];
   }
@@ -1642,12 +2356,29 @@ class Parser {
   _for() {
     this._eat('kw', 'for');
     this._eat('op', '(');
+
+    // for (x in obj) / for (var x in obj) — detected by peeking past the
+    // binding name for `in`, since up to that point it is identical to the
+    // three-clause form's init.
+    const isVar = this._at('kw', 'var');
+    const save = this.i;
+    if (isVar || this._at('name')) {
+      if (isVar) this._next();
+      if (this._at('name')) {
+        const name = this._eat('name');
+        if (this._at('kw', 'in')) {
+          this._next();
+          const obj = this.expression();
+          this._eat('op', ')');
+          return ['forin', name, isVar, obj, this.body()];
+        }
+      }
+      this.i = save;   // not a for-in after all; re-parse as a normal for
+    }
+
     let init = null;
     if (this._at('kw', 'var')) {
-      this._next();
-      const name = this._eat('name');
-      this._eat('op', '=');
-      init = ['assign', ['var', name], this.expression()];
+      init = this._varDecl(false);
     } else if (!this._at('op', ';')) {
       init = this._assignmentFrom(this.expression());
     }
@@ -1657,7 +2388,7 @@ class Parser {
     let update = null;
     if (!this._at('op', ')')) update = this._assignmentFrom(this.expression());
     this._eat('op', ')');
-    const body = this.block();
+    const body = this.body();
     return ['for', init, cond, update, body];
   }
 
@@ -1665,57 +2396,100 @@ class Parser {
     this._eat('kw', 'if'); this._eat('op', '(');
     const c = this.expression();
     this._eat('op', ')');
-    const then = this.block();
+    const then = this.body();
     let els = null;
     if (this._at('kw', 'else')) {
       this._next();
-      els = this._at('kw', 'if') ? [this._if()] : this.block();
+      els = this._at('kw', 'if') ? [this._if()] : this.body();
     }
     return ['if', c, then, els];
   }
 
+  // Precedence climbing for the binary rungs, then a right-associative
+  // ternary on top. `&&`/`||` become 'logical' rather than 'binop' because
+  // they compile to branches, not to a single opcode.
   expression(minPrec = 1) {
     let left = this._unary();
     for (;;) {
       const [k, v] = this._peek();
-      if (k === 'op' && v in PREC && PREC[v] >= minPrec) {
+      const isOp = (k === 'op' || (k === 'kw' && (v === 'instanceof' || v === 'in')));
+      if (isOp && v in PREC && PREC[v] >= minPrec) {
         this._next();
-        left = ['binop', v, left, this.expression(PREC[v] + 1)];
+        const right = this.expression(PREC[v] + 1);
+        left = (v === '&&' || v === '||') ? ['logical', v, left, right] : ['binop', v, left, right];
       } else {
-        return left;
+        break;
       }
     }
+    if (minPrec <= 1 && this._at('op', '?')) {
+      this._next();
+      const thenE = this.expression();
+      this._eat('op', ':');
+      const elseE = this.expression();
+      return ['ternary', left, thenE, elseE];
+    }
+    return left;
   }
 
   _unary() {
     const [k, v] = this._peek();
-    if (k === 'op' && (v === '-' || v === '!')) {
+    if (k === 'op' && (v === '-' || v === '!' || v === '+' || v === '~')) {
       this._next();
       return ['unop', v, this._unary()];
+    }
+    if (k === 'kw' && (v === 'typeof' || v === 'delete')) {
+      this._next();
+      return ['unop', v, this._unary()];
+    }
+    if (k === 'op' && (v === '++' || v === '--')) {
+      this._next();
+      return ['update', v, this._unary(), true];   // prefix
+    }
+    if (k === 'kw' && v === 'new') {
+      this._next();
+      // `new A.B(x)` — the callee is a postfix chain, but the argument list
+      // belongs to `new`, so parse the chain without letting it swallow a call.
+      const callee = this._postfix(true);
+      let args = [];
+      if (this._at('op', '(')) args = this._args();
+      return ['new', callee, args];
     }
     return this._postfix();
   }
 
-  _postfix() {
+  _args() {
+    this._eat('op', '(');
+    const args = [];
+    if (!this._at('op', ')')) {
+      args.push(this.expression());
+      while (this._at('op', ',')) { this._next(); args.push(this.expression()); }
+    }
+    this._eat('op', ')');
+    return args;
+  }
+
+  // `noCall` stops the chain before a `(` so `new Foo(1)` binds its argument
+  // list to the `new` rather than parsing as `new (Foo(1))`.
+  _postfix(noCall = false) {
     let e = this._primary();
     for (;;) {
       if (this._at('op', '.')) {
         this._next();
-        e = ['member', e, this._eat('name')];
-      } else if (this._at('op', '(')) {
-        this._next();
-        const args = [];
-        if (!this._at('op', ')')) {
-          args.push(this.expression());
-          while (this._at('op', ',')) { this._next(); args.push(this.expression()); }
-        }
-        this._eat('op', ')');
-        e = ['call', e, args];
+        // property names may be keywords (`clip.in`, `obj.default`), which the
+        // lexer classifies as 'kw' — accept either token kind here
+        const [tk, tv] = this._peek();
+        if (tk === 'name' || tk === 'kw') { this._next(); e = ['member', e, tv]; }
+        else e = ['member', e, this._eat('name')];
+      } else if (!noCall && this._at('op', '(')) {
+        e = ['call', e, this._args()];
       } else if (this._at('op', '[')) {
         this._next();
         const idx = this.expression();
         this._eat('op', ']');
         e = ['index', e, idx];
+      } else if (this._at('op', '++') || this._at('op', '--')) {
+        const [, op] = this._next();
+        e = ['update', op, e, false];   // postfix
       } else {
         return e;
       }
@@ -1732,6 +2506,11 @@ class Parser {
       if (v === 'false') return ['bool', false];
       if (v === 'null') return ['null'];
       if (v === 'undefined') return ['undef'];
+      if (v === 'this') return ['this'];
+      if (v === 'function') {   // function expression (anonymous or named)
+        const name = this._at('name') ? this._eat('name') : '';
+        return ['funcexpr', name, this._params(), this.block()];
+      }
     }
     if (k === 'op' && v === '(') {
       const e = this.expression();
@@ -1747,6 +2526,25 @@ class Parser {
       this._eat('op', ']');
       return ['array', elements];
     }
+    if (k === 'op' && v === '{') {   // object literal
+      const props = [];
+      if (!this._at('op', '}')) {
+        for (;;) {
+          const [pk, pv, pl, pc] = this._next();
+          let key;
+          if (pk === 'name' || pk === 'kw') key = pv;
+          else if (pk === 'str') key = pv;
+          else if (pk === 'num') key = String(pv);
+          else throw new SyntaxError(`Line ${pl}, column ${pc}: bad object key ${pk} ${JSON.stringify(pv)}`);
+          this._eat('op', ':');
+          props.push({ key, value: this.expression() });
+          if (this._at('op', ',')) { this._next(); if (this._at('op', '}')) break; continue; }
+          break;
+        }
+      }
+      this._eat('op', '}');
+      return ['object', props];
+    }
     throw new SyntaxError(`Line ${line}, column ${col}: unexpected ${k} ${JSON.stringify(v)}`);
   }
 }
@@ -1756,7 +2554,31 @@ class Parser {
 const BINOP = {
   '+': avm1.ADD2, '-': avm1.SUBTRACT, '*': avm1.MULTIPLY, '/': avm1.DIVIDE,
   '%': avm1.MODULO, '<': avm1.LESS2, '>': avm1.GREATER, '==': avm1.EQUALS2,
-  '&&': avm1.AND, '||': avm1.OR,
+  '===': avm1.STRICT_EQUALS,
+  '&': avm1.BIT_AND, '|': avm1.BIT_OR, '^': avm1.BIT_XOR,
+  '<<': avm1.BIT_LSHIFT, '>>': avm1.BIT_RSHIFT, '>>>': avm1.BIT_URSHIFT,
+  'instanceof': avm1.INSTANCE_OF,
+};
+
+// Zero-argument globals that lower to a single opcode instead of a real call.
+const NULLARY_BUILTINS = { getTimer: avm1.GET_TIMER, targetPath: avm1.TARGET_PATH };
+
+// One-argument globals that lower to a single opcode. `trace` writes to the
+// GFx log (visible in a log-enabled build, inert in retail); `random` is AS1's
+// integer random, distinct from Math.random().
+const UNARY_BUILTINS = {
+  trace: avm1.TRACE, random: avm1.RANDOM, ord: avm1.CHAR_TO_ASCII,
+  chr: avm1.ASCII_TO_CHAR, int: avm1.TO_INTEGER,
+  Number: avm1.TO_NUMBER, String: avm1.TO_STRING, length: avm1.STRING_LENGTH,
+};
+
+// Timeline verbs on the current target. `stop`/`play` take no arguments;
+// gotoAndStop/gotoAndPlay take one and lower to GotoFrame2 so the argument can
+// be a frame number or a label string, matching AS2.
+const TIMELINE_BUILTINS = {
+  play: () => avm1.PLAY, stop: () => avm1.STOP,
+  nextFrame: () => avm1.NEXT_FRAME, prevFrame: () => avm1.PREV_FRAME,
+  stopAllSounds: () => avm1.STOP_SOUNDS,
 };
 const NULL_LIT = Uint8Array.from([0x96, 0x01, 0x00, 0x02]);
 const UNDEF_LIT = Uint8Array.from([0x96, 0x01, 0x00, 0x03]);
@@ -1775,7 +2597,23 @@ class Gen {
     this.asm = new Assembler();
     this._n = 0;
     this._loopStack = []; // [{continueLabel, breakLabel}], innermost last
+    this._scratchDepth = 0; // nesting depth of register-using compound assigns
   }
+
+  // Global registers 0-3 are the only ones addressable outside a
+  // DefineFunction2 body (GFx logs "register out of bounds" past that), and
+  // this compiler emits plain DefineFunction, so every context shares those
+  // four. They're only ever live within a single statement's expansion, so
+  // allocating by nesting depth is enough to keep concurrent uses apart.
+  _scratchRegister() {
+    if (this._scratchDepth >= 4) {
+      throw new SyntaxError(
+        'compound assignment nested too deeply on targets with side effects — '
+        + 'only 4 AVM1 scratch registers exist; split the statement up');
+    }
+    return this._scratchDepth++;
+  }
+  _releaseScratch() { this._scratchDepth--; }
 
   _label(prefix) {
     this._n += 1;
@@ -1792,28 +2630,64 @@ class Gen {
     const t = node[0];
     if (t === 'assign') {
       this._assign(node[1], node[2]);
+    } else if (t === 'compound') {
+      this._compound(node[1], node[2], node[3]);
+    } else if (t === 'vardecl') {
+      this._varDecl(node[1], node[2]);
+    } else if (t === 'block') {
+      this.block(node[1]);
     } else if (t === 'if') {
       this._if(node[1], node[2], node[3]);
     } else if (t === 'while') {
       this._while(node[1], node[2]);
+    } else if (t === 'dowhile') {
+      this._doWhile(node[1], node[2]);
     } else if (t === 'for') {
       this._forLoop(node[1], node[2], node[3], node[4]);
+    } else if (t === 'forin') {
+      this._forIn(node[1], node[2], node[3], node[4]);
+    } else if (t === 'switch') {
+      this._switch(node[1], node[2]);
     } else if (t === 'break') {
-      if (!this._loopStack.length) throw new SyntaxError('break used outside of a loop');
+      if (!this._loopStack.length) throw new SyntaxError('break used outside of a loop or switch');
       this.asm.jump(this._loopStack[this._loopStack.length - 1].breakLabel);
     } else if (t === 'continue') {
-      if (!this._loopStack.length) throw new SyntaxError('continue used outside of a loop');
-      this.asm.jump(this._loopStack[this._loopStack.length - 1].continueLabel);
+      // switch pushes a break-only frame, so `continue` inside a switch has to
+      // skip past it to the enclosing loop, matching AS2.
+      const loop = [...this._loopStack].reverse().find(f => f.continueLabel);
+      if (!loop) throw new SyntaxError('continue used outside of a loop');
+      this.asm.jump(loop.continueLabel);
     } else if (t === 'func') {
       this.emit(avm1.defineFunction(node[1], node[2], compileBody(node[3])));
     } else if (t === 'return') {
       if (node[1] !== null) this.expression(node[1]); else this.emit(UNDEF_LIT);
       this.emit(avm1.RETURN);
     } else if (t === 'expr') {
+      // `x++;` as a statement discards its value, so generate the no-value
+      // form rather than pushing a result and popping it back off.
+      if (node[1][0] === 'update') { this._update(node[1], false); return; }
       const n = this.expression(node[1]);
       for (let i = 0; i < n; i++) this.emit(avm1.POP);
     } else {
       throw new SyntaxError(`bad statement ${JSON.stringify(t)}`);
+    }
+  }
+
+  // `var x = e;` compiles to DefineLocal, not SetVariable. GFx makes that a
+  // true function-local when it runs inside a function and falls back to
+  // SetVariable for frame actions and event handlers all by itself
+  // (GFxAction.cpp case 0x3C), so one encoding is correct in both contexts —
+  // no need for the compiler to know which one it is emitting into.
+  //
+  // Previously this emitted SetVariable unconditionally, which meant every
+  // `var` inside a function silently wrote a _root global.
+  _varDecl(name, init) {
+    this.emit(avm1.push(name));
+    if (init === null) {
+      this.emit(avm1.DEFINE_LOCAL2);
+    } else {
+      this.expression(init);
+      this.emit(avm1.DEFINE_LOCAL);
     }
   }
 
@@ -1829,6 +2703,122 @@ class Gen {
     } else {
       throw new SyntaxError(`cannot assign to ${JSON.stringify(lval[0])}`);
     }
+  }
+
+  // `target op= rhs`, evaluating `target`'s subexpressions exactly once.
+  //
+  // The old desugaring to `target = target op rhs` duplicated the target AST,
+  // so `a[next()] += 1` called next() twice and `f().x += 1` called f() twice.
+  // AVM1 has PushDuplicate and StackSwap but no two-slot duplicate, so the
+  // shapes below are what's reachable without a scratch register — and a
+  // register is used only where nothing else will do.
+  _compound(op, target, rhs) {
+    const applyOp = () => this._emitBinaryOp(op);
+
+    if (target[0] === 'var') {
+      // Names are literals, so re-emitting the push costs nothing and has no
+      // side effect.
+      const name = target[1];
+      this.emit(avm1.push(name));
+      this.emit(avm1.push(name)); this.emit(avm1.GET_VARIABLE);
+      this.expression(rhs);
+      applyOp();
+      this.emit(avm1.SET_VARIABLE);
+      return;
+    }
+
+    if (target[0] === 'member') {
+      // stack: obj -> obj obj -> obj old -> obj new -> obj prop new
+      const prop = target[2];
+      this.expression(target[1]);
+      this.emit(avm1.PUSH_DUPLICATE);
+      this.emit(avm1.push(prop));
+      this.emit(avm1.GET_MEMBER);
+      this.expression(rhs);
+      applyOp();
+      this.emit(avm1.push(prop));
+      this.emit(avm1.STACK_SWAP);
+      this.emit(avm1.SET_MEMBER);
+      return;
+    }
+
+    if (target[0] === 'index') {
+      const [, objNode, keyNode] = target;
+      if (isPure(keyNode)) {
+        // Re-emitting a pure key is free, and keeping it on the stack under
+        // the object avoids needing a register at all.
+        this.expression(objNode);
+        this.emit(avm1.PUSH_DUPLICATE);
+        this.expression(keyNode);
+        this.emit(avm1.GET_MEMBER);
+        this.expression(rhs);
+        applyOp();
+        this.expression(keyNode);
+        this.emit(avm1.STACK_SWAP);
+        this.emit(avm1.SET_MEMBER);
+        return;
+      }
+      // Impure key: compute it once into a scratch register. StoreRegister
+      // reads the top of stack without popping it (GFxAction.cpp case 0x87),
+      // hence the explicit POP.
+      const r = this._scratchRegister();
+      try {
+        this.expression(objNode);
+        this.expression(keyNode);
+        this.emit(avm1.storeRegister(r));
+        this.emit(avm1.POP);
+        this.emit(avm1.PUSH_DUPLICATE);
+        this.emit(avm1.push(avm1.reg(r)));
+        this.emit(avm1.GET_MEMBER);
+        this.expression(rhs);
+        applyOp();
+        this.emit(avm1.push(avm1.reg(r)));
+        this.emit(avm1.STACK_SWAP);
+        this.emit(avm1.SET_MEMBER);
+      } finally {
+        this._releaseScratch();
+      }
+      return;
+    }
+
+    throw new SyntaxError(`cannot assign to ${JSON.stringify(target[0])}`);
+  }
+
+  // ++ / -- in either fixity. `wantValue` is false in statement position
+  // (`i++;`), which lets the impure-target case work without needing to read
+  // the target back a second time.
+  _update(node, wantValue) {
+    const [, op, target, isPrefix] = node;
+    const delta = op === '++' ? avm1.INCREMENT : avm1.DECREMENT;
+
+    if (target[0] === 'var') {
+      const name = target[1];
+      if (wantValue && !isPrefix) {
+        this.emit(avm1.push(name)); this.emit(avm1.GET_VARIABLE);   // old value = result
+      }
+      this.emit(avm1.push(name));
+      this.emit(avm1.push(name)); this.emit(avm1.GET_VARIABLE);
+      this.emit(delta);
+      this.emit(avm1.SET_VARIABLE);
+      if (wantValue && isPrefix) {
+        this.emit(avm1.push(name)); this.emit(avm1.GET_VARIABLE);   // new value = result
+      }
+      return wantValue ? 1 : 0;
+    }
+
+    // Non-variable targets reuse the compound-assignment expansion, which
+    // already evaluates the target once. Producing a value on top of that
+    // needs one extra read of the target, which is only sound if reading it
+    // again has no side effect.
+    if (wantValue && !isPure(target)) {
+      throw new SyntaxError(
+        `${op} on an expression with side effects can't also produce a value here — `
+        + 'assign it to a variable first');
+    }
+    if (wantValue && !isPrefix) this.expression(target);            // old value
+    this._compound(op === '++' ? '+' : '-', target, ['num', 1]);
+    if (wantValue && isPrefix) this.expression(target);             // new value
+    return wantValue ? 1 : 0;
   }
 
   _if(cond, then, els) {
@@ -1859,6 +2849,91 @@ class Gen {
     this.asm.jump(top);
     this.asm.label(end);
     this._loopStack.pop();
+  }
+
+  // do { body } while (cond) — body runs before the first test, and `continue`
+  // goes to the test rather than back to the top.
+  _doWhile(cond, body) {
+    const top = this._label('do');
+    const cont = this._label('docont');
+    const end = this._label('enddo');
+    this._loopStack.push({ continueLabel: cont, breakLabel: end });
+    this.asm.label(top);
+    this.block(body);
+    this.asm.label(cont);
+    this.expression(cond);
+    this.asm.jumpIf(top);
+    this.asm.label(end);
+    this._loopStack.pop();
+  }
+
+  // for (name in obj) — Enumerate2 pops the object, pushes a null sentinel,
+  // then pushes every member name on top of it (GFxAction.cpp case 0x55), so
+  // the loop consumes names until it uncovers the null.
+  //
+  // A `break` out of this leaves the unconsumed names on the stack. That's
+  // harmless — the AVM1 stack is per action buffer and discarded at its end —
+  // but it is why this isn't a tidy unwind.
+  _forIn(name, isVar, objNode, body) {
+    const top = this._label('forin');
+    const end = this._label('endforin');
+    this.expression(objNode);
+    this.emit(avm1.ENUMERATE2);
+    this._loopStack.push({ continueLabel: top, breakLabel: end });
+    this.asm.label(top);
+    this.emit(avm1.PUSH_DUPLICATE);
+    this.emit(NULL_LIT);
+    this.emit(avm1.EQUALS2);
+    this.asm.jumpIf(end);
+    // bind the current name: stack has [.., nameStr], and SetVariable wants
+    // [.., varName, value] — so push the target name and swap them into order
+    this.emit(avm1.push(name));
+    this.emit(avm1.STACK_SWAP);
+    this.emit(isVar ? avm1.DEFINE_LOCAL : avm1.SET_VARIABLE);
+    this.block(body);
+    this.asm.jump(top);
+    this.asm.label(end);
+    this._loopStack.pop();
+    this.emit(avm1.POP);   // discard the null sentinel
+  }
+
+  // switch — a chain of strict-equality tests against a duplicated
+  // discriminant, then a per-case trampoline that pops the discriminant before
+  // entering the body. Popping up front (rather than leaving it live across
+  // the case bodies) is what lets `break` and `continue` inside a case behave
+  // like they do anywhere else.
+  _switch(disc, cases) {
+    const end = this._label('endswitch');
+    const bodyLabels = cases.map((_, i) => this._label(`case${i}body`));
+    const testLabels = cases.map((_, i) => this._label(`case${i}match`));
+    const defaultIdx = cases.findIndex(c => c.test === null);
+
+    this.expression(disc);
+    cases.forEach((c, i) => {
+      if (c.test === null) return;               // default is not part of the chain
+      this.emit(avm1.PUSH_DUPLICATE);
+      this.expression(c.test);
+      this.emit(avm1.STRICT_EQUALS);
+      this.asm.jumpIf(testLabels[i]);
+    });
+    this.emit(avm1.POP);                          // no case matched
+    this.asm.jump(defaultIdx >= 0 ? bodyLabels[defaultIdx] : end);
+
+    cases.forEach((c, i) => {
+      if (c.test === null) return;
+      this.asm.label(testLabels[i]);
+      this.emit(avm1.POP);                        // drop the discriminant
+      this.asm.jump(bodyLabels[i]);
+    });
+
+    // Bodies run in source order so that fallthrough works.
+    this._loopStack.push({ continueLabel: null, breakLabel: end });
+    cases.forEach((c, i) => {
+      this.asm.label(bodyLabels[i]);
+      this.block(c.body);
+    });
+    this._loopStack.pop();
+    this.asm.label(end);
   }
 
   // for(init; cond; update) { body } — continue must run `update` before
@@ -1903,37 +2978,141 @@ class Gen {
       this.expression(node[1]); this.expression(node[2]); this.emit(avm1.GET_MEMBER);
       return 1;
     }
+    if (t === 'this') { this.emit(avm1.var('this')); return 1; }
     if (t === 'unop') {
-      if (node[1] === '-') {
+      const op = node[1];
+      if (op === '-') {
         this.emit(avm1.push(0)); this.expression(node[2]); this.emit(avm1.SUBTRACT);
-      } else {
+      } else if (op === '!') {
         this.expression(node[2]); this.emit(avm1.NOT);
+      } else if (op === '+') {
+        this.expression(node[2]); this.emit(avm1.TO_NUMBER);
+      } else if (op === '~') {
+        // AVM1 has no bitwise-NOT opcode; ~x is x ^ -1.
+        this.expression(node[2]); this.emit(avm1.push(-1)); this.emit(avm1.BIT_XOR);
+      } else if (op === 'typeof') {
+        this.expression(node[2]); this.emit(avm1.TYPE_OF);
+      } else if (op === 'delete') {
+        return this._delete(node[2]);
+      } else {
+        throw new SyntaxError(`bad unary operator ${JSON.stringify(op)}`);
       }
       return 1;
     }
     if (t === 'binop') return this._binop(node[1], node[2], node[3]);
+    if (t === 'logical') return this._logical(node[1], node[2], node[3]);
+    if (t === 'ternary') return this._ternary(node[1], node[2], node[3]);
+    if (t === 'update') return this._update(node, true);
     if (t === 'call') return this._call(node[1], node[2]);
+    if (t === 'new') return this._new(node[1], node[2]);
+    if (t === 'funcexpr') {
+      // An empty name leaves the function object on the stack instead of
+      // binding it — which is exactly what an expression position wants.
+      this.emit(avm1.defineFunction(node[1], node[2], compileBody(node[3])));
+      return 1;
+    }
     if (t === 'array') {
       for (const el of node[1]) this.expression(el); // push elements in source order
       this.emit(avm1.push(node[1].length));
       this.emit(avm1.INIT_ARRAY);
       return 1;
     }
+    if (t === 'object') {
+      // InitObject pops {value, name} pairs after the count, so each property
+      // goes on as name-then-value (GFxAction.cpp case 0x43).
+      for (const p of node[1]) { this.emit(avm1.push(p.key)); this.expression(p.value); }
+      this.emit(avm1.push(node[1].length));
+      this.emit(avm1.INIT_OBJECT);
+      return 1;
+    }
     throw new SyntaxError(`bad expression ${JSON.stringify(t)}`);
   }
 
-  _binop(op, a, b) {
-    this.expression(a); this.expression(b);
+  _emitBinaryOp(op) {
     if (op in BINOP) {
       this.emit(BINOP[op]);
     } else if (op === '!=') {
       this.emit(concatArrays(avm1.EQUALS2, avm1.NOT));
+    } else if (op === '!==') {
+      this.emit(concatArrays(avm1.STRICT_EQUALS, avm1.NOT));
     } else if (op === '<=') {
       this.emit(concatArrays(avm1.GREATER, avm1.NOT));
     } else if (op === '>=') {
       this.emit(concatArrays(avm1.LESS2, avm1.NOT));
     } else {
       throw new SyntaxError(`bad operator ${JSON.stringify(op)}`);
+    }
+  }
+
+  _binop(op, a, b) {
+    this.expression(a); this.expression(b);
+    this._emitBinaryOp(op);
+    return 1;
+  }
+
+  // && and || short-circuit and yield the operand value, as in AS2 — not the
+  // boolean-coercing And/Or opcodes this used to emit, which always evaluated
+  // both sides. `a && b()` now really does skip the call when `a` is falsy.
+  _logical(op, a, b) {
+    const end = this._label(op === '&&' ? 'endand' : 'endor');
+    this.expression(a);
+    this.emit(avm1.PUSH_DUPLICATE);
+    if (op === '&&') this.emit(avm1.NOT);   // bail out when the left side is falsy
+    this.asm.jumpIf(end);
+    this.emit(avm1.POP);                    // drop the left value, take the right
+    this.expression(b);
+    this.asm.label(end);
+    return 1;
+  }
+
+  _ternary(cond, thenE, elseE) {
+    const elseL = this._label('telse');
+    const end = this._label('tend');
+    this.expression(cond);
+    this.asm.jumpUnless(elseL);
+    this.expression(thenE);
+    this.asm.jump(end);
+    this.asm.label(elseL);
+    this.expression(elseE);
+    this.asm.label(end);
+    return 1;
+  }
+
+  // `delete obj.p` needs the object and name (Delete); `delete x` takes just a
+  // name and resolves it through scope (Delete2).
+  _delete(target) {
+    if (target[0] === 'member') {
+      this.expression(target[1]); this.emit(avm1.push(target[2])); this.emit(avm1.DELETE);
+    } else if (target[0] === 'index') {
+      this.expression(target[1]); this.expression(target[2]); this.emit(avm1.DELETE);
+    } else if (target[0] === 'var') {
+      this.emit(avm1.push(target[1])); this.emit(avm1.DELETE2);
+    } else {
+      throw new SyntaxError('delete needs a variable or a property reference');
+    }
+    return 1;
+  }
+
+  // `new C(a, b)` — NewObject pops the class *name* then the arg count, and
+  // resolves the name through scope (GFxAction.cpp case 0x40). A dotted
+  // constructor (`new a.B()`) has no name to resolve, so it uses NewMethod,
+  // which takes the object and the member name instead.
+  _new(callee, args) {
+    for (let i = args.length - 1; i >= 0; i--) this.expression(args[i]);
+    this.emit(avm1.push(args.length));
+    if (callee[0] === 'var') {
+      this.emit(avm1.push(callee[1]));
+      this.emit(avm1.NEW_OBJECT);
+    } else if (callee[0] === 'member') {
+      this.expression(callee[1]);
+      this.emit(avm1.push(callee[2]));
+      this.emit(avm1.NEW_METHOD);
+    } else if (callee[0] === 'index') {
+      this.expression(callee[1]);
+      this.expression(callee[2]);
+      this.emit(avm1.NEW_METHOD);
+    } else {
+      throw new SyntaxError('new needs a constructor name or a member reference');
     }
     return 1;
   }
@@ -1945,6 +3124,34 @@ class Gen {
       if (args.length > 1) this.expression(args[1]); else this.emit(avm1.push(''));
       this.emit(avm1.getUrl2(0));
       return 0;
+    }
+
+    // Globals that are single opcodes rather than real functions. Only taken
+    // when the arity matches, so e.g. a user-defined two-argument `random` is
+    // still compiled as an ordinary call.
+    if (callee[0] === 'var') {
+      const name = callee[1];
+      if (args.length === 0 && Object.prototype.hasOwnProperty.call(TIMELINE_BUILTINS, name)) {
+        this.emit(TIMELINE_BUILTINS[name]());
+        return 0;   // timeline verbs leave nothing on the stack
+      }
+      if (args.length === 0 && Object.prototype.hasOwnProperty.call(NULLARY_BUILTINS, name)) {
+        this.emit(NULLARY_BUILTINS[name]);
+        return 1;
+      }
+      if (args.length === 1 && Object.prototype.hasOwnProperty.call(UNARY_BUILTINS, name)) {
+        this.expression(args[0]);
+        this.emit(UNARY_BUILTINS[name]);
+        return name === 'trace' ? 0 : 1;   // trace consumes its argument
+      }
+      // gotoAndStop/gotoAndPlay on the current timeline. GotoFrame2 takes the
+      // target off the stack, so a label string and a frame number both work
+      // through the same encoding.
+      if (args.length === 1 && (name === 'gotoAndStop' || name === 'gotoAndPlay')) {
+        this.expression(args[0]);
+        this.emit(avm1.gotoFrame2(name === 'gotoAndPlay'));
+        return 0;
+      }
     }
     if (callee[0] === 'member') { // method call: obj.m(args)
       for (let i = args.length - 1; i >= 0; i--) this.expression(args[i]);
@@ -2033,6 +3240,26 @@ function emitRectShape(swf, cid, x1, y1, x2, y2, fill, radius, stroke) {
   return swf.defineShapeEx(cid, x1, y1, x2, y2, { fill, radius: radius || 0, stroke: stroke || null });
 }
 
+// Normalises an item's frame membership. `null`/absent means "on every frame",
+// which is both the sensible default for backdrop content and what keeps
+// single-frame projects behaving exactly as they did before frames existed.
+function normalizeFrames(frames) {
+  if (frames === null || frames === undefined) return null;
+  if (!Array.isArray(frames)) return [Math.max(0, Math.trunc(Number(frames)) || 0)];
+  const out = frames.map(f => Math.max(0, Math.trunc(Number(f)) || 0));
+  return out.length ? Array.from(new Set(out)).sort((a, b) => a - b) : null;
+}
+
+function normalizeEvents(events) {
+  if (!events || typeof events !== 'object') return null;
+  const out = [];
+  for (const [name, source] of Object.entries(events)) {
+    if (typeof source === 'string' ? !source.trim() : !source) continue;
+    out.push({ event: name, source });
+  }
+  return out.length ? out : null;
+}
+
 class Movie {
   // FONT_ID: the imported font's character id; content ids start above it.
   static FONT_ID = 1;
@@ -2040,6 +3267,7 @@ class Movie {
   constructor(width, height, {
     fps = 30, name = 'movie', background = [0, 0, 0],
     fontName = '_normal_Font', fontUrl = '_normal_Font.swf',
+    frames = null, stopAtStart = null,
   } = {}) {
     this.width = width;
     this.height = height;
@@ -2051,6 +3279,35 @@ class Movie {
     this._items = [];
     this._script = new Uint8Array(0);
     this._needsFont = false;
+    // Frame metadata: one entry per frame, each { label }. A movie with no
+    // declared frames is a single unlabelled frame, exactly as before.
+    this._frames = [];
+    this._frameScripts = new Map();   // frame index -> AVM1 bytes
+    this._exports = [];               // [{ name, itemIndex }]
+    if (frames) this.setFrames(frames);
+    // A multi-frame movie loops forever unless told otherwise, which is almost
+    // never what a state-machine HUD wants. Defaults to stopping when there is
+    // more than one frame, and never overrides an explicit choice.
+    this._stopAtStart = stopAtStart;
+  }
+
+  // frames: ['idle', 'alert'] or [{label:'idle'}, {}]
+  setFrames(frames) {
+    this._frames = frames.map(f => (typeof f === 'string' ? { label: f } : { label: f.label || null }));
+    return this;
+  }
+
+  frameCount() {
+    return Math.max(1, this._frames.length);
+  }
+
+  // Exports the most recently added item under a public symbol name, so script
+  // can attachMovie() it. Only sprite-backed items (clips) are meaningful
+  // targets, since that's what attachMovie instantiates.
+  exportAs(symbolName) {
+    if (!this._items.length) throw new Error('exportAs() needs an item to export');
+    this._exports.push({ name: symbolName, itemIndex: this._items.length - 1 });
+    return this;
   }
 
   // -- content ------------------------------------------------------------
@@ -2059,16 +3316,35 @@ class Movie {
   // [{ratio,color}]} for a gradient. options: {radius (px corner radius),
   // stroke: {width, color}}. Omitting both keeps the exact original
   // plain-solid-rectangle output (see emitRectShape in _emitItem).
-  rect(x, y, w, h, fill = [255, 255, 255], { radius = 0, stroke = null } = {}) {
-    this._items.push({ kind: 'rect', x, y, w, h, fill: normalizeFill(fill), radius, stroke: normalizeStroke(stroke) });
+  rect(x, y, w, h, fill = [255, 255, 255], { radius = 0, stroke = null, frames = null, alpha = null, name = null } = {}) {
+    this._items.push({
+      kind: 'rect', x, y, w, h, fill: normalizeFill(fill), radius, stroke: normalizeStroke(stroke),
+      frames: normalizeFrames(frames), alpha, name,
+    });
     return this;
   }
 
-  text(x, y, string, { size = 13, color = [255, 255, 255], varName = null, width = null } = {}) {
+  // Text options beyond the original size/color/varName/width now cover the
+  // DefineEditText flags the format supports — multiline, wordWrap, html,
+  // border, align, selectable and friends. Omitting them all reproduces the
+  // previous single-line read-only field byte for byte.
+  // `name` gives the placed field an instance name, so script can reach the
+  // field object itself (`_root.hp_txt.text`, `.textWidth`, `.setTextFormat`)
+  // rather than only its bound variable's value. The game's own movies work
+  // this way — `text_txt` and `text_mc` are among the most common identifiers
+  // across the shipped UI.
+  text(x, y, string, {
+    size = 13, color = [255, 255, 255], varName = null, width = null,
+    height = null, frames = null, alpha = null, name = null,
+    multiline = false, wordWrap = false, html = false, border = false,
+    selectable = false, align = null, leading = 0, maxLength = null,
+  } = {}) {
     this._needsFont = true;
     const w = width !== null ? width : Math.max(8, this.width - x - 4);
     this._items.push({
-      kind: 'text', x, y, w, size, text: string, color: rgba(color), varName: varName || '',
+      kind: 'text', x, y, w, h: height, size, text: string, color: rgba(color),
+      varName: varName || '', frames: normalizeFrames(frames), alpha, name,
+      textOptions: { multiline, wordWrap, html, border, selectable, align, leading, maxLength },
     });
     return this;
   }
@@ -2076,19 +3352,30 @@ class Movie {
   button(x, y, w, h, event, {
     arg = null, fill = [52, 58, 68], hover = [74, 82, 96],
     label = null, labelColor = [235, 238, 242], labelSize = 13,
-    radius = 0, stroke = null,
+    radius = 0, stroke = null, frames = null,
   } = {}) {
     if (label !== null) this._needsFont = true;
     this._items.push({
       kind: 'button', x, y, w, h, event, arg, fill: normalizeFill(fill),
       hover: hover ? normalizeFill(hover) : null, label, labelColor: rgba(labelColor), labelSize,
-      radius, stroke: normalizeStroke(stroke),
+      radius, stroke: normalizeStroke(stroke), frames: normalizeFrames(frames),
     });
     return this;
   }
 
-  clip(name, x, y, w, h, fill = [255, 255, 255], { radius = 0, stroke = null } = {}) {
-    this._items.push({ kind: 'clip', name, x, y, w, h, color: normalizeFill(fill), radius, stroke: normalizeStroke(stroke) });
+  // `events` attaches AS2 handlers to the placed clip:
+  //   { release: 'fscommand("fire", 1);', rollOver: '...' }
+  // Sources are compiled at build time. This is the interactive primitive the
+  // shipped game movies actually use — see the note on clipActions in swf.js.
+  clip(name, x, y, w, h, fill = [255, 255, 255], {
+    radius = 0, stroke = null, frames = null, alpha = null, events = null,
+    scale9 = null,
+  } = {}) {
+    this._items.push({
+      kind: 'clip', name, x, y, w, h, color: normalizeFill(fill), radius,
+      stroke: normalizeStroke(stroke), frames: normalizeFrames(frames), alpha,
+      events: normalizeEvents(events), scale9,
+    });
     return this;
   }
 
@@ -2097,8 +3384,8 @@ class Movie {
   // DefineBitsLossless2; see js/codec/bitmap.js for the encoder and its
   // confidence notes (this is the one part of the codec without an
   // independent reference to check pixel-format correctness against).
-  image(x, y, w, h, imageData) {
-    this._items.push({ kind: 'image', x, y, w, h, imageData });
+  image(x, y, w, h, imageData, { frames = null, alpha = null } = {}) {
+    this._items.push({ kind: 'image', x, y, w, h, imageData, frames: normalizeFrames(frames), alpha });
     return this;
   }
 
@@ -2129,9 +3416,16 @@ class Movie {
     };
   }
 
-  script(scriptOrBytes) {
+  // Frame 0's script by default; pass a frame index to attach actions to a
+  // later frame instead.
+  script(scriptOrBytes, frameIndex = null) {
     const body = typeof scriptOrBytes.body === 'function' ? scriptOrBytes.body() : scriptOrBytes;
-    this._script = concatBytes(this._script, body);
+    if (frameIndex === null || frameIndex === 0) {
+      this._script = concatBytes(this._script, body);
+    } else {
+      const prev = this._frameScripts.get(frameIndex) || new Uint8Array(0);
+      this._frameScripts.set(frameIndex, concatBytes(prev, body));
+    }
     return this;
   }
 
@@ -2149,19 +3443,79 @@ class Movie {
 
     this._cid = Movie.FONT_ID;
     this._depth = 0;
-    let places = new Uint8Array(0);
+
+    // Pass 1: emit every definition tag up front and record what each item
+    // needs placed, at which depth. Depths are assigned once and stay fixed
+    // for the whole timeline, so a re-place on a later frame lands on the same
+    // slot and a RemoveObject2 targets the right thing.
+    const placements = [];   // [{ item, tags: Uint8Array[] }] in item order
     for (const it of this._items) {
-      const r = this._emitItem(it, tags, places);
+      const r = this._emitItem(it, tags, new Uint8Array(0));
       tags = r.tags;
-      places = r.places;
+      placements.push({ item: it, places: r.places, charIds: r.charIds || [] });
     }
 
-    tags = concatBytes(tags, places);
-    if (this._script.length) {
-      tags = concatBytes(tags, swf.doAction(concatBytes(this._script, avm1.END)));
+    // ExportAssets, so script can attachMovie() the named symbols.
+    if (this._exports.length) {
+      const entries = [];
+      for (const ex of this._exports) {
+        const p = placements[ex.itemIndex];
+        const id = p && p.charIds.length ? p.charIds[p.charIds.length - 1] : null;
+        if (id !== null) entries.push({ id, name: ex.name });
+      }
+      if (entries.length) tags = concatBytes(tags, swf.exportAssets(entries));
     }
-    tags = concatBytes(tags, swf.SHOW_FRAME, swf.END);
-    return swf.buildGfx(this.width, this.height, this.fps, tags);
+
+    const frameCount = this.frameCount();
+    const isMultiFrame = frameCount > 1;
+
+    // Which item indices are visible on a given frame. `frames: null` means
+    // every frame.
+    const visibleOn = (f) => {
+      const set = new Set();
+      placements.forEach((p, i) => {
+        const fr = p.item.frames;
+        // an item built through a path that never set `frames` is on every
+        // frame, same as an explicit null
+        if (!fr || fr.indexOf(f) >= 0) set.add(i);
+      });
+      return set;
+    };
+
+    // Pass 2: walk the timeline, diffing each frame against the previous one.
+    let prev = new Set();
+    for (let f = 0; f < frameCount; f++) {
+      const meta = this._frames[f];
+      if (meta && meta.label) tags = concatBytes(tags, swf.frameLabel(meta.label));
+
+      const now = visibleOn(f);
+      // Anything that was on the previous frame and isn't on this one has to
+      // be explicitly removed — a placed object otherwise persists.
+      for (const i of prev) {
+        if (!now.has(i)) {
+          for (const d of (placements[i].item.depths || [])) tags = concatBytes(tags, swf.removeObject2(d));
+        }
+      }
+      for (const i of now) {
+        if (!prev.has(i)) tags = concatBytes(tags, placements[i].places);
+      }
+
+      // Frame actions. Frame 0 additionally gets an implicit stop() on a
+      // multi-frame movie, so a state-machine HUD sits on its first state
+      // instead of cycling through every frame forever.
+      let frameScript = f === 0 ? this._script : (this._frameScripts.get(f) || new Uint8Array(0));
+      const wantStop = this._stopAtStart === null ? isMultiFrame : this._stopAtStart;
+      if (f === 0 && wantStop) frameScript = concatBytes(avm1.STOP, frameScript);
+      if (frameScript.length) {
+        tags = concatBytes(tags, swf.doAction(concatBytes(frameScript, avm1.END)));
+      }
+
+      tags = concatBytes(tags, swf.SHOW_FRAME);
+      prev = now;
+    }
+
+    tags = concatBytes(tags, swf.END);
+    return swf.buildGfx(this.width, this.height, this.fps, tags, frameCount);
   }
 
   _nextCid() {
@@ -2174,19 +3528,44 @@ class Movie {
     return this._depth;
   }
 
+  // Emits an item's definition tags and its placement tags. `it.depths`
+  // records every depth the item occupies so the timeline can remove it again
+  // on a frame where it isn't present; `charIds` feeds ExportAssets.
+  //
+  // Placement uses the plain placeObject()/placeNamed() path whenever nothing
+  // new is in play, keeping existing output byte-identical, and only reaches
+  // for the fuller placeObject2() when alpha or event handlers are present.
   _emitItem(it, tags, places) {
     const kind = it.kind;
+    it.depths = [];
+    const charIds = [];
+    const cx = (it.alpha === null || it.alpha === undefined) ? null : swf.alphaCxform(it.alpha);
+
+    const place = (cid, matrix, name) => {
+      const depth = this._nextDepth();
+      it.depths.push(depth);
+      if (!cx && !name) return swf.placeObject(cid, depth, matrix || swf.IDENTITY_MATRIX);
+      if (!cx && name) return swf.placeNamed(cid, depth, name, matrix || swf.IDENTITY_MATRIX);
+      return swf.placeObject2({
+        charId: cid, depth, matrix: matrix || swf.IDENTITY_MATRIX, name: name || null, cxform: cx,
+      });
+    };
+
     if (kind === 'rect') {
-      const cid = this._nextCid();
+      const cid = this._nextCid(); charIds.push(cid);
       tags = concatBytes(tags, emitRectShape(swf, cid, it.x, it.y, it.x + it.w, it.y + it.h, it.fill, it.radius, it.stroke));
-      places = concatBytes(places, swf.placeObject(cid, this._nextDepth()));
+      places = concatBytes(places, place(cid, null, it.name || null));
     } else if (kind === 'text') {
-      const cid = this._nextCid();
+      const cid = this._nextCid(); charIds.push(cid);
+      const opts = it.textOptions || {};
+      // A multiline field needs real height; a single-line one keeps the
+      // original one-line-plus-padding box so existing output is unchanged.
+      const bottom = it.h != null ? it.y + it.h : it.y + it.size + 6;
       tags = concatBytes(tags, swf.defineEditText(
-        cid, it.x, it.y, it.x + it.w, it.y + it.size + 6,
-        Movie.FONT_ID, it.size, it.text, it.color, it.varName
+        cid, it.x, it.y, it.x + it.w, bottom,
+        Movie.FONT_ID, it.size, it.text, it.color, it.varName, opts
       ));
-      places = concatBytes(places, swf.placeObject(cid, this._nextDepth()));
+      places = concatBytes(places, place(cid, null, it.name || null));
     } else if (kind === 'button') {
       const x1 = it.x, y1 = it.y, x2 = it.x + it.w, y2 = it.y + it.h;
       const up = this._nextCid();
@@ -2204,39 +3583,61 @@ class Movie {
       }
       const arg = it.arg !== null ? avm1.push(it.arg) : avm1.push('');
       const action = avm1.fscommand(it.event, arg);
-      const btn = this._nextCid();
+      const btn = this._nextCid(); charIds.push(btn);
       tags = concatBytes(tags, swf.defineButton(btn, records, action));
-      places = concatBytes(places, swf.placeObject(btn, this._nextDepth()));
+      places = concatBytes(places, place(btn));
       if (it.label) {
         const lb = this._nextCid();
         const ly = y1 + Math.max(0, Math.floor((it.h - it.labelSize) / 2)) - 1;
         tags = concatBytes(tags, swf.defineEditText(
           lb, x1 + 6, ly, x2 - 2, y2, Movie.FONT_ID, it.labelSize, it.label, it.labelColor, ''
         ));
-        places = concatBytes(places, swf.placeObject(lb, this._nextDepth()));
+        places = concatBytes(places, place(lb));
       }
     } else if (kind === 'clip') {
       const hl = this._nextCid();
       tags = concatBytes(tags, emitRectShape(swf, hl, 0, 0, it.w, it.h, it.color, it.radius, it.stroke));
-      const sprite = this._nextCid();
+      const sprite = this._nextCid(); charIds.push(sprite);
       const control = concatBytes(swf.placeObject(hl, 1), swf.SHOW_FRAME, swf.END);
       tags = concatBytes(tags, swf.defineSprite(sprite, control));
+      // 9-slice guides, so a panel's corners keep their size when scaled.
+      // Applies to the sprite, and is given in coordinates local to it.
+      if (it.scale9) {
+        const g = it.scale9;
+        tags = concatBytes(tags, swf.defineScale9Grid(sprite, g.left, g.top, g.right, g.bottom));
+      }
       const matrix = encodeMatrix(px(it.x), px(it.y));
-      places = concatBytes(places, swf.placeNamed(sprite, this._nextDepth(), it.name, matrix));
+      if (it.events) {
+        // Compiled here rather than at clip() time so a handler's source can
+        // be edited right up until build, and so compile errors surface with
+        // everything else's.
+        const handlers = it.events.map(h => ({
+          events: [h.event],
+          actions: typeof h.source === 'string' ? Compiler.compileSource(h.source) : h.source,
+        }));
+        const depth = this._nextDepth();
+        it.depths.push(depth);
+        places = concatBytes(places, swf.placeObject2({
+          charId: sprite, depth, matrix, name: it.name, cxform: cx,
+          clipActions: swf.clipActions(handlers),
+        }));
+      } else {
+        places = concatBytes(places, place(sprite, matrix, it.name));
+      }
     } else if (kind === 'image') {
       // Bitmap is referenced here (inside a method body) rather than via a
       // top-level alias like the other modules use, because movie.js loads
       // before bitmap.js — a top-level `const bitmap = Bitmap` would run
       // immediately at load time and throw. Inside a method it's fine: this
       // only executes on build(), by which point everything has loaded.
-      const bid = this._nextCid();
+      const bid = this._nextCid(); charIds.push(bid);
       tags = concatBytes(tags, Bitmap.defineBitsLossless2(bid, it.imageData.width, it.imageData.height, it.imageData));
       const scaleX = px(it.w) / it.imageData.width;
       const scaleY = px(it.h) / it.imageData.height;
       const matrix = encodeMatrix(px(it.x), px(it.y), [scaleX, scaleY]);
-      places = concatBytes(places, swf.placeObject(bid, this._nextDepth(), matrix));
+      places = concatBytes(places, place(bid, matrix));
     }
-    return { tags, places };
+    return { tags, places, charIds };
   }
 }
 
@@ -2291,9 +3692,37 @@ function walkAvm1(code, ctx, out) {
         throw new VerifyError(`${ctx}: malformed DefineFunction header`);
       }
       if (o + codesize > code.length) throw new VerifyError(`${ctx}: function ${JSON.stringify(name)} body overruns`);
-      out.push(name);
-      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name}`, out);
+      // an anonymous definition is a function *expression* — it has no name to
+      // report, but its body still has to be walked
+      if (name) out.push(name);
+      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name || '<anonymous>'}`, out);
       o += codesize;
+    } else if (op === 0x8e) { // DefineFunction2: same idea, richer header
+      let name, q, nparams, codesize;
+      try {
+        const nul1 = pl.indexOf(0);
+        name = String.fromCharCode(...pl.subarray(0, nul1));
+        q = nul1 + 1;
+        nparams = u16(pl, q); q += 2;
+        q += 1;            // registerCount
+        q += 2;            // flags
+        for (let i = 0; i < nparams; i++) {
+          q += 1;          // this parameter's register assignment
+          q = pl.indexOf(0, q) + 1;
+        }
+        codesize = u16(pl, q);
+      } catch (e) {
+        throw new VerifyError(`${ctx}: malformed DefineFunction2 header`);
+      }
+      if (o + codesize > code.length) throw new VerifyError(`${ctx}: function ${JSON.stringify(name)} body overruns`);
+      if (name) out.push(name);
+      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name || '<anonymous>'}`, out);
+      o += codesize;
+    } else if (op === 0x94) { // With: [u16 code size] then the block, inline
+      const size = u16(pl, 0);
+      if (o + size > code.length) throw new VerifyError(`${ctx}: with-block overruns`);
+      walkAvm1(code.subarray(o, o + size), `${ctx}/with`, out);
+      o += size;
     } else if (op === 0x99 || op === 0x9d) { // Jump / If: target must stay in range
       const off = i16(pl, 0);
       const tgt = o + off;
@@ -2366,7 +3795,10 @@ function verifyMovie(movie, require = null) {
   return verifyGfx(movie.build(), require);
 }
 
-  return { VerifyError, verifyGfx, verifyMovie };
+  // walkAvm1 is exposed so tests can check a bare action stream (not just a
+  // whole movie) with a reader that was written from the format rather than by
+  // inverting the assembler.
+  return { VerifyError, verifyGfx, verifyMovie, _walkAvm1: walkAvm1 };
 })();
 
 
@@ -2401,7 +3833,17 @@ function readCString(code, pos) {
 
 function u16(code, pos) { return code[pos] | (code[pos + 1] << 8); }
 function i16(code, pos) { const v = u16(code, pos); return v >= 0x8000 ? v - 0x10000 : v; }
-function f64(code, pos) { return new DataView(code.buffer, code.byteOffset + pos, 8).getFloat64(0, true); }
+
+// ActionPush type 6 stores the two 32-bit halves swapped (high word first) —
+// see the long note on doublele() in avm1.js. Must match that encoder exactly,
+// or Play mode disagrees with what the game would actually run.
+function f64(code, pos) {
+  const le = new Uint8Array(8);
+  le.set(code.subarray(pos + 4, pos + 8), 0);
+  le.set(code.subarray(pos, pos + 4), 4);
+  return new DataView(le.buffer).getFloat64(0, true);
+}
+function f32(code, pos) { return new DataView(code.buffer, code.byteOffset + pos, 4).getFloat32(0, true); }
 function i32(code, pos) { return new DataView(code.buffer, code.byteOffset + pos, 4).getInt32(0, true); }
 
 // -- runtime object model -----------------------------------------------------
@@ -2450,6 +3892,60 @@ class ClipProxy {
 
 const CLIP_METHODS = new Set(['gotoAndStop', 'gotoAndPlay', 'play', 'stop', 'swapDepths', 'removeMovieClip']);
 const ARRAY_METHODS = ['push', 'pop', 'shift', 'unshift', 'reverse', 'sort', 'slice', 'splice', 'join', 'indexOf', 'concat'];
+const STRING_METHODS = ['charAt', 'charCodeAt', 'indexOf', 'lastIndexOf', 'slice', 'split',
+  'substr', 'substring', 'toLowerCase', 'toUpperCase', 'concat'];
+
+// The built-in globals a HUD script is likely to reach for. Scoped to what the
+// shipped game movies actually use (Math, Array, Object, String, Number, Key)
+// rather than trying to be a complete AS2 standard library — anything missing
+// traces a clear "not supported in the simulator" rather than failing silently.
+function makeGlobals(rt) {
+  const Key = {
+    __keys: new Set(),
+    __listeners: [],
+    getCode: () => Key.__lastCode || 0,
+    isDown: (c) => Key.__keys.has(Number(c)),
+    addListener: (o) => { Key.__listeners.push(o); },
+    removeListener: (o) => {
+      const i = Key.__listeners.indexOf(o);
+      if (i >= 0) Key.__listeners.splice(i, 1);
+    },
+    // AS2 key constants, so `Key.getCode() == Key.LEFT` reads naturally
+    BACKSPACE: 8, TAB: 9, ENTER: 13, SHIFT: 16, CONTROL: 17, CAPSLOCK: 20,
+    ESCAPE: 27, SPACE: 32, PGUP: 33, PGDN: 34, END: 35, HOME: 36,
+    LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, INSERT: 45, DELETEKEY: 46,
+  };
+  return {
+    Math,
+    Number, String, Boolean, Array, Object,
+    Key,
+    // AS2's Math.random() equivalent lives here too; `random(n)` is the
+    // separate AS1 opcode, handled in the exec loop.
+    getTimer: () => Date.now() - rt.startTime,
+    _root: rt.root,
+    _level0: rt.root,
+  };
+}
+
+function typeOfValue(v) {
+  if (v === undefined) return 'undefined';
+  if (v === null) return 'null';
+  if (v instanceof ClipProxy) return 'movieclip';
+  if (typeof v === 'function') return 'function';
+  if (typeof v === 'string') return 'string';
+  if (typeof v === 'number') return 'number';
+  if (typeof v === 'boolean') return 'boolean';
+  return 'object';
+}
+
+function toInt32(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? (n | 0) : 0;
+}
+function toUint32(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? (n >>> 0) : 0;
+}
 
 class Runtime {
   constructor(items, callbacks) {
@@ -2462,6 +3958,16 @@ class Runtime {
     this.rootDynamic = new Map();  // arbitrary _root-level properties
     this.functions = new Map();    // name -> {params, bodyStart, bodyEnd, code}
     this.instructionBudget = 250000;
+
+    // AVM1 has 4 global registers usable outside a DefineFunction2 body; the
+    // compiler only ever uses them as short-lived scratch inside one
+    // statement's expansion, so a flat array is enough here.
+    this.registers = new Array(256).fill(undefined);
+    // ActionConstantPool is per action buffer. Play mode runs one script at a
+    // time, so a single pool on the runtime matches how the player scopes it.
+    this.constantPool = [];
+    this.startTime = Date.now();
+    this.globals = makeGlobals(this);
 
     for (const it of items) {
       if (it.kind === 'text' && it.varName) this.textValues.set(it.varName, it.text);
@@ -2506,12 +4012,26 @@ class Runtime {
 
   getVariable(locals, name) {
     if (locals && locals.has(name)) return locals.get(name);
-    if (name === '_root' || name === '_root.') return this.root;
-    return this.getRootProperty(name);
+    if (name === '_root' || name === '_root.' || name === '_level0') return this.root;
+    if (name === 'this') return this.root;
+    const own = this.getRootProperty(name);
+    if (own !== undefined) return own;
+    // built-in globals resolve last, so a movie's own variable of the same
+    // name still wins — matching how the player resolves scope
+    if (Object.prototype.hasOwnProperty.call(this.globals, name)) return this.globals[name];
+    return undefined;
   }
 
   setVariable(locals, name, value) {
     if (locals && locals.has(name)) { locals.set(name, value); return; }
+    this.setRootProperty(name, value);
+  }
+
+  // ActionDefineLocal. Inside a function this creates a true local; at frame
+  // level GFx itself falls back to SetVariable (GFxAction.cpp case 0x3C), so
+  // the absence of a local frame is not an error here.
+  defineLocal(locals, name, value) {
+    if (locals) { locals.set(name, value); return; }
     this.setRootProperty(name, value);
   }
 
@@ -2536,10 +4056,31 @@ class Runtime {
 
   callByName(name, args) {
     const fn = this.functions.get(name);
-    if (!fn) { this.trace(`⚠ call to undefined function "${name}(...)"`); return undefined; }
-    const locals = new Map();
-    fn.params.forEach((p, i) => locals.set(p, args[i]));
-    return execRange(this, fn.code, fn.bodyStart, fn.bodyEnd, locals);
+    if (fn) return this.callClosure(fn, args, this.root);
+    // a function value held in a variable (`var f = function(){}; f();`)
+    const asValue = this.getVariable(null, name);
+    if (asValue && asValue.__avm1Fn) return this.callClosure(asValue, args, this.root);
+    if (typeof asValue === 'function') return asValue(...args);
+    this.trace(`⚠ call to undefined function "${name}(...)"`);
+    return undefined;
+  }
+
+  // ActionNewObject resolves its class name through scope. Script-defined
+  // constructors run their body with a fresh `this`; the built-in globals fall
+  // back to real JS construction so `new Object()` / `new Array()` behave.
+  construct(className, args) {
+    const fn = this.functions.get(className);
+    if (fn) {
+      const obj = {};
+      this.callClosure(fn, args, obj);
+      return obj;
+    }
+    const g = this.globals[className];
+    if (typeof g === 'function') {
+      try { return new g(...args); } catch (e) { /* fall through to the warning */ }
+    }
+    this.trace(`⚠ can't construct unknown class "${className}"`);
+    return undefined;
   }
 
   callMethod(obj, name, args) {
@@ -2550,6 +4091,13 @@ class Runtime {
       this.trace(`⚠ array method "${name}" not supported in the simulator`);
       return undefined;
     }
+    if (typeof obj === 'string') {
+      if (STRING_METHODS.includes(name) && typeof obj[name] === 'function') {
+        return obj[name](...args);
+      }
+      this.trace(`⚠ string method "${name}" not supported in the simulator`);
+      return undefined;
+    }
     if (obj instanceof ClipProxy) {
       if (CLIP_METHODS.has(name)) {
         this.trace(`(${obj.item.name}.${name}(${args.map(fmt).join(', ')}) — no-op: this simulator has no timeline to move through)`);
@@ -2558,9 +4106,27 @@ class Runtime {
       this.trace(`⚠ method "${name}" not supported in the simulator`);
       return undefined;
     }
+    if (obj === this.root) {
+      // methods called on _root are the movie's own script functions
+      if (this.functions.has(name)) return this.callByName(name, args);
+      this.trace(`⚠ _root has no function "${name}"`);
+      return undefined;
+    }
+    // a script-defined function stored as a property (e.g. obj.f = function(){})
+    if (obj && obj[name] && obj[name].__avm1Fn) return this.callClosure(obj[name], args, obj);
     if (obj && typeof obj[name] === 'function') return obj[name](...args);
     this.trace(`⚠ method "${name}" not supported in the simulator`);
     return undefined;
+  }
+
+  // Invoke a function value produced by ActionDefineFunction (as opposed to a
+  // named top-level function). `thisObj` becomes the callee's `this`.
+  callClosure(fn, args, thisObj) {
+    const locals = new Map();
+    fn.params.forEach((p, i) => locals.set(p, args[i]));
+    locals.set('this', thisObj === undefined ? this.root : thisObj);
+    locals.set('arguments', args.slice());
+    return execRange(this, fn.code, fn.bodyStart, fn.bodyEnd, locals);
   }
 
   // Runs a whole compiled script once (as a real player does on entering the
@@ -2668,6 +4234,123 @@ function execRange(rt, code, pcStart, pcEnd, locals) {
           stack.push(vals);
           break;
         }
+
+        // --- stack shuffling ---
+        case 0x4c: { const v = stack[stack.length - 1]; stack.push(v); break; }  // PushDuplicate
+        case 0x4d: { // StackSwap
+          const b = stack.pop(), a = stack.pop();
+          stack.push(b); stack.push(a);
+          break;
+        }
+
+        // --- scope ---
+        case 0x3c: { const value = stack.pop(); const name = toStr(stack.pop()); rt.defineLocal(locals, name, value); break; }
+        case 0x41: { const name = toStr(stack.pop()); if (locals && !locals.has(name)) locals.set(name, undefined); break; }
+
+        // --- comparison / conversion ---
+        case 0x66: { const b = stack.pop(), a = stack.pop(); stack.push(a === b); break; }   // StrictEquals
+        case 0x18: { stack.push(Math.trunc(toNum(stack.pop())) || 0); break; }               // ToInteger
+        case 0x4a: { stack.push(toNum(stack.pop())); break; }                                // ToNumber
+        case 0x4b: { stack.push(toStr(stack.pop())); break; }                                // ToString
+        case 0x44: { stack.push(typeOfValue(stack.pop())); break; }                          // TypeOf
+        case 0x54: { // InstanceOf
+          const ctor = stack.pop(), obj = stack.pop();
+          stack.push(typeof ctor === 'function' ? (obj instanceof ctor) : false);
+          break;
+        }
+
+        // --- arithmetic ---
+        case 0x50: { stack.push(toNum(stack.pop()) + 1); break; }   // Increment
+        case 0x51: { stack.push(toNum(stack.pop()) - 1); break; }   // Decrement
+        case 0x30: { stack.push(Math.floor(Math.random() * toNum(stack.pop()))); break; }  // RandomNumber
+        case 0x34: { stack.push(Date.now() - rt.startTime); break; }                       // GetTimer
+
+        // --- bitwise ---
+        case 0x60: { const b = stack.pop(), a = stack.pop(); stack.push(toInt32(a) & toInt32(b)); break; }
+        case 0x61: { const b = stack.pop(), a = stack.pop(); stack.push(toInt32(a) | toInt32(b)); break; }
+        case 0x62: { const b = stack.pop(), a = stack.pop(); stack.push(toInt32(a) ^ toInt32(b)); break; }
+        case 0x63: { const b = stack.pop(), a = stack.pop(); stack.push(toInt32(a) << (toUint32(b) & 31)); break; }
+        case 0x64: { const b = stack.pop(), a = stack.pop(); stack.push(toInt32(a) >> (toUint32(b) & 31)); break; }
+        case 0x65: { const b = stack.pop(), a = stack.pop(); stack.push(toUint32(a) >>> (toUint32(b) & 31)); break; }
+
+        // --- strings ---
+        case 0x14: { stack.push(toStr(stack.pop()).length); break; }
+        case 0x21: { const b = stack.pop(), a = stack.pop(); stack.push(toStr(a) + toStr(b)); break; }
+        case 0x32: { stack.push(toStr(stack.pop()).charCodeAt(0) || 0); break; }
+        case 0x33: { stack.push(String.fromCharCode(toNum(stack.pop()))); break; }
+
+        // --- objects ---
+        case 0x43: { // InitObject: pop count, then that many {value, name} pairs
+          const n = toNum(stack.pop());
+          const obj = {};
+          for (let i = 0; i < n; i++) {
+            const value = stack.pop();
+            const name = toStr(stack.pop());
+            obj[name] = value;
+          }
+          stack.push(obj);
+          break;
+        }
+        case 0x40: { // NewObject: pop class name, pop argc, pop args
+          const cls = toStr(stack.pop());
+          const n = toNum(stack.pop());
+          const args = [];
+          for (let i = 0; i < n; i++) args.push(stack.pop());
+          stack.push(rt.construct(cls, args));
+          break;
+        }
+        case 0x53: { // NewMethod: pop name, pop object, pop argc, pop args
+          const name = toStr(stack.pop());
+          const obj = stack.pop();
+          const n = toNum(stack.pop());
+          const args = [];
+          for (let i = 0; i < n; i++) args.push(stack.pop());
+          const ctor = rt.getMember(obj, name);
+          stack.push(typeof ctor === 'function' ? new ctor(...args) : undefined);
+          break;
+        }
+        case 0x3a: { // Delete: pop name, pop object
+          const name = toStr(stack.pop());
+          const obj = stack.pop();
+          if (obj && typeof obj === 'object' && !(obj instanceof ClipProxy)) {
+            if (obj === rt.root) { rt.rootDynamic.delete(name); stack.push(true); }
+            else { stack.push(delete obj[name]); }
+          } else stack.push(false);
+          break;
+        }
+        case 0x3b: { // Delete2: pop name, resolve through scope
+          const name = toStr(stack.pop());
+          if (locals && locals.has(name)) { locals.delete(name); stack.push(true); }
+          else stack.push(rt.rootDynamic.delete(name));
+          break;
+        }
+        case 0x55: { // Enumerate2: pop object, push null then every member name
+          const obj = stack.pop();
+          stack.push(null);
+          let names = [];
+          if (obj === rt.root) {
+            names = [...rt.rootDynamic.keys(), ...rt.textValues.keys()];
+          } else if (obj && typeof obj === 'object') {
+            names = Object.keys(obj);
+          }
+          for (const nm of names) stack.push(nm);
+          break;
+        }
+
+        // --- display / debug ---
+        case 0x26: { rt.trace('trace: ' + toStr(stack.pop())); break; }
+        case 0x45: { stack.push('_root'); break; }   // TargetPath
+        case 0x25: { // RemoveSprite
+          const target = stack.pop();
+          rt.trace(`(removeMovieClip(${fmt(target)}) — no-op in the simulator)`);
+          break;
+        }
+
+        // --- timeline verbs: no timeline to move in the simulator ---
+        case 0x04: case 0x05: case 0x06: case 0x07: case 0x09:
+          rt.trace(`(timeline action 0x${op.toString(16)} — no-op: the simulator plays a single frame)`);
+          break;
+
         default:
           rt.trace(`⚠ unsupported single-byte action 0x${op.toString(16)}`);
       }
@@ -2684,14 +4367,50 @@ function execRange(rt, code, pcStart, pcEnd, locals) {
       while (p < end) {
         const type = code[p]; p += 1;
         if (type === 0x00) { const r = readCString(code, p); stack.push(r.str); p = r.next; }
+        else if (type === 0x01) { stack.push(f32(code, p)); p += 4; }
         else if (type === 0x02) { stack.push(null); }
         else if (type === 0x03) { stack.push(undefined); }
+        else if (type === 0x04) { stack.push(rt.registers[code[p]]); p += 1; }
         else if (type === 0x05) { stack.push(code[p] !== 0); p += 1; }
         else if (type === 0x06) { stack.push(f64(code, p)); p += 8; }
         else if (type === 0x07) { stack.push(i32(code, p)); p += 4; }
+        else if (type === 0x08) { stack.push(rt.constantPool[code[p]]); p += 1; }
+        else if (type === 0x09) { stack.push(rt.constantPool[u16(code, p)]); p += 2; }
         else { rt.trace(`⚠ unsupported push type 0x${type.toString(16)}`); break; }
       }
       pc = end;
+    } else if (op === 0x87) { // StoreRegister — reads the top of stack without popping
+      rt.registers[code[bodyStart]] = stack[stack.length - 1];
+      pc = bodyStart + len;
+    } else if (op === 0x88) { // ConstantPool
+      let p = bodyStart + 2;
+      const count = u16(code, bodyStart);
+      const pool = [];
+      for (let i = 0; i < count; i++) { const r = readCString(code, p); pool.push(r.str); p = r.next; }
+      rt.constantPool = pool;
+      pc = bodyStart + len;
+    } else if (op === 0x9f) { // GotoFrame2
+      const target = stack.pop();
+      rt.trace(`(gotoAndStop/Play(${fmt(target)}) — no-op: the simulator plays a single frame)`);
+      pc = bodyStart + len;
+    } else if (op === 0x81 || op === 0x8c) { // GotoFrame / GotoLabel
+      rt.trace('(goto frame — no-op: the simulator plays a single frame)');
+      pc = bodyStart + len;
+    } else if (op === 0x8e) { // DefineFunction2
+      let p = bodyStart;
+      const r1 = readCString(code, p); const name = r1.str; p = r1.next;
+      const nparams = u16(code, p); p += 2;
+      p += 1;                       // registerCount
+      p += 2;                       // flags
+      const params = [];
+      for (let i = 0; i < nparams; i++) {
+        p += 1;                     // this parameter's register assignment
+        const r = readCString(code, p); params.push(r.str); p = r.next;
+      }
+      const codeSize = u16(code, p); p += 2;
+      const fn = { params, bodyStart: p, bodyEnd: p + codeSize, code, __avm1Fn: true };
+      if (name) rt.functions.set(name, fn); else stack.push(fn);
+      pc = p + codeSize;
     } else if (op === 0x9a) { // GetURL2 (fscommand)
       const target = stack.pop();
       const url = toStr(stack.pop());
@@ -2710,7 +4429,10 @@ function execRange(rt, code, pcStart, pcEnd, locals) {
       const codeSize = u16(code, p); p += 2;
       const bodyStart2 = p;
       const bodyEnd2 = p + codeSize;
-      rt.functions.set(name, { params, bodyStart: bodyStart2, bodyEnd: bodyEnd2, code });
+      const fn = { params, bodyStart: bodyStart2, bodyEnd: bodyEnd2, code, __avm1Fn: true };
+      // A named definition binds the function; an anonymous one leaves it on
+      // the stack, which is how function expressions get their value.
+      if (name) rt.functions.set(name, fn); else stack.push(fn);
       pc = bodyEnd2; // definitions don't execute their body — only calling does
     } else if (op === 0x99) { // Jump
       const off = i16(code, bodyStart);
@@ -2981,16 +4703,38 @@ const Decode = (function() {
     return { placements };
   }
 
+  // CXFORMWITHALPHA: HasAddTerms(1), HasMultTerms(1), Nbits(4), then the
+  // multiply terms and then the add terms — four each, all sharing that single
+  // Nbits width. (An earlier version of this reader looked for a separate
+  // width field per group, which desynchronised the stream for any placement
+  // that carried a colour transform, taking the name and everything after it
+  // with it.) Multiply terms are fixed-point over 256, per
+  // GFxStream::ReadCxformRgba.
+  function readCxform(r) {
+    const hasAdd = r.ubits(1), hasMult = r.ubits(1);
+    const nb = r.ubits(4);
+    let mult = null, add = null;
+    if (hasMult) mult = { r: r.sbits(nb) / 256, g: r.sbits(nb) / 256, b: r.sbits(nb) / 256, a: r.sbits(nb) / 256 };
+    if (hasAdd) add = { r: r.sbits(nb), g: r.sbits(nb), b: r.sbits(nb), a: r.sbits(nb) };
+    r.align();
+    return { mult, add };
+  }
+
   function decodePlace(body) {                   // tag 26
     const flags = body[0]; let o = 1;
     const depth = body[o] | (body[o + 1] << 8); o += 2;
-    let charId = null, name = null, matrix = { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 };
+    let charId = null, name = null, cxform = null;
+    let matrix = { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 };
     if (flags & 0x02) { charId = body[o] | (body[o + 1] << 8); o += 2; }
     if (flags & 0x04) { const r = new BitReader(body, o); matrix = readMatrix(r); o = r.pos; }
-    if (flags & 0x08) { const r = new BitReader(body, o); if (r.ubits(1)) { const n = r.ubits(4); r.ubits(n * 4); } if (r.ubits(1)) { const n = r.ubits(4); r.ubits(n * 4); } r.align(); o = r.pos; }  // cxform
+    if (flags & 0x08) { const r = new BitReader(body, o); cxform = readCxform(r); o = r.pos; }
     if (flags & 0x10) o += 2;                    // ratio
     if (flags & 0x20) { const c = cstr(body, o); name = c.s; o = c.next; }
-    return { depth, charId, name, matrix };
+    if (flags & 0x40) o += 2;                    // clip depth
+    // clip actions (flag 0x01) trail the record; nothing after them is read,
+    // so they need no skipping here
+    const alpha = cxform && cxform.mult ? cxform.mult.a : null;
+    return { depth, charId, name, matrix, alpha };
   }
 
   function exporterName(body) { try { const n = body[9]; return latin1(body.subarray(10, 10 + n)); } catch (e) { return 'imported'; } }
@@ -3089,7 +4833,7 @@ const Decode = (function() {
     return { project, notes };
   }
 
-  return { decodeGfx, _internal: { parseContainer, decodeShape, decodeEditText, BitReader } };
+  return { decodeGfx, _internal: { parseContainer, decodeShape, decodeEditText, decodePlace, readCxform, BitReader } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = Decode;
@@ -3505,7 +5249,69 @@ function defaultStage() {
     width: 380, height: 150, fps: 30, name: 'movie',
     background: [22, 24, 28, 255],
     fontName: '_normal_Font', fontUrl: '_normal_Font.swf',
+    // Timeline frames, as labels. An empty list is a single unlabelled frame,
+    // which is what every project was before frames existed.
+    frames: [],
   };
+}
+
+// Clip event names that can carry a handler, in the order they're offered in
+// the UI. These are the subset of GFx's clip events that make sense for HUD
+// authoring — the full wire set is in Swf.CLIP_EVENT.
+const CLIP_EVENT_NAMES = ['press', 'release', 'releaseOutside', 'rollOver', 'rollOut',
+  'dragOver', 'dragOut', 'enterFrame', 'load', 'unload', 'keyDown', 'keyUp'];
+
+function normEvents(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const name of CLIP_EVENT_NAMES) {
+    const src = raw[name];
+    if (typeof src === 'string' && src.trim()) out[name] = src;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// Frame membership: an array of frame indices, or null for "every frame".
+function normItemFrames(raw, frameCount) {
+  if (raw === null || raw === undefined) return null;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  for (const v of list) {
+    const n = Math.trunc(num(v, -1));
+    if (n >= 0 && n < Math.max(1, frameCount)) out.push(n);
+  }
+  if (!out.length) return null;
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+function normScale9(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const left = num(raw.left, 0), top = num(raw.top, 0);
+  const right = num(raw.right, 0), bottom = num(raw.bottom, 0);
+  if (right <= left || bottom <= top) return null;
+  return { left, top, right, bottom };
+}
+
+function normAlpha(raw) {
+  if (raw === null || raw === undefined) return null;
+  const n = num(raw, 1);
+  if (!(n >= 0) || n >= 1) return null;   // 1 (or nonsense) means "no transform"
+  return n;
+}
+
+const TEXT_ALIGNS = ['left', 'right', 'center', 'justify'];
+
+function normTextOptions(ri) {
+  const o = {};
+  if (ri.multiline) o.multiline = true;
+  if (ri.word_wrap) o.wordWrap = true;
+  if (ri.html) o.html = true;
+  if (ri.border) o.border = true;
+  if (ri.selectable) o.selectable = true;
+  if (typeof ri.align === 'string' && TEXT_ALIGNS.indexOf(ri.align) >= 0) o.align = ri.align;
+  if (ri.leading !== undefined) o.leading = num(ri.leading, 0);
+  if (ri.max_length !== undefined) o.maxLength = Math.max(0, Math.trunc(num(ri.max_length, 0))) || null;
+  return Object.keys(o).length ? o : null;
 }
 
 function defaultItemFields(kind, x, y) {
@@ -3623,6 +5429,13 @@ function serializeItem(it) {
   if (it.hidden) out.hidden = true;
   if (it.posLocked) out.lock_pos = true;
   if (it.sizeLocked) out.lock_size = true;
+  // Timeline and placement extras, omitted when they're at their defaults so
+  // single-frame projects round-trip to exactly the JSON they had before.
+  if (it.frames && it.frames.length) out.frames = it.frames.slice();
+  if (it.alpha !== null && it.alpha !== undefined) out.alpha = it.alpha;
+  if (it.events) out.events = Object.assign({}, it.events);
+  if (it.exportAs) out.export = it.exportAs;
+  if (it.scale9) out.scale9 = Object.assign({}, it.scale9);
   if (it.kind === 'rect') {
     Object.assign(out, { x: it.x, y: it.y, w: it.w, h: it.h, fill: it.fill });
     if (it.radius) out.radius = it.radius;
@@ -3631,6 +5444,18 @@ function serializeItem(it) {
     Object.assign(out, { x: it.x, y: it.y, text: it.text, size: it.size, color: it.color });
     if (it.varName) out.var = it.varName;
     if (it.width !== null && it.width !== undefined) out.width = it.width;
+    if (it.height !== null && it.height !== undefined) out.height = it.height;
+    const t = it.textOptions;
+    if (t) {
+      if (t.multiline) out.multiline = true;
+      if (t.wordWrap) out.word_wrap = true;
+      if (t.html) out.html = true;
+      if (t.border) out.border = true;
+      if (t.selectable) out.selectable = true;
+      if (t.align) out.align = t.align;
+      if (t.leading) out.leading = t.leading;
+      if (t.maxLength) out.max_length = t.maxLength;
+    }
   } else if (it.kind === 'button') {
     Object.assign(out, { x: it.x, y: it.y, w: it.w, h: it.h, event: it.event });
     if (it.arg !== null && it.arg !== undefined) out.arg = it.arg;
@@ -3656,11 +5481,11 @@ function serializeItem(it) {
 function serializeProject() {
   return {
     version: 1,
-    stage: {
+    stage: Object.assign({
       width: state.stage.width, height: state.stage.height, fps: state.stage.fps,
       name: state.stage.name, background: state.stage.background,
       font_name: state.stage.fontName, font_url: state.stage.fontUrl,
-    },
+    }, (state.stage.frames && state.stage.frames.length) ? { frames: state.stage.frames.slice() } : {}),
     items: state.items.map(serializeItem),
     script: state.script || '',
   };
@@ -3726,7 +5551,13 @@ function loadProjectFromObject(obj) {
     background: normColor(s.background, [22, 24, 28, 255]),
     fontName: typeof s.font_name === 'string' ? s.font_name : '_normal_Font',
     fontUrl: typeof s.font_url === 'string' ? s.font_url : '_normal_Font.swf',
+    // Frames are declared as a list of labels; an entry may be null/"" for an
+    // unlabelled frame that still exists on the timeline.
+    frames: Array.isArray(s.frames)
+      ? s.frames.map(f => (typeof f === 'string' ? f : (f && typeof f.label === 'string' ? f.label : '')))
+      : [],
   };
+  const frameCount = Math.max(1, stage.frames.length);
 
   const rawItems = Array.isArray(obj.items) ? obj.items : [];
   const items = [];
@@ -3740,13 +5571,27 @@ function loadProjectFromObject(obj) {
     const hidden = !!ri.hidden;
     const posLocked = !!ri.lock_pos;
     const sizeLocked = !!ri.lock_size;
+    // Placement extras every kind understands. `frames` indices outside the
+    // declared range are dropped rather than rejected, so trimming the frame
+    // list doesn't invalidate a whole project.
+    const common = {
+      frames: normItemFrames(ri.frames, frameCount),
+      alpha: normAlpha(ri.alpha),
+      events: normEvents(ri.events),
+      exportAs: typeof ri.export === 'string' && ri.export ? ri.export : null,
+      scale9: normScale9(ri.scale9),
+    };
+    if (common.events && ri.kind !== 'clip') {
+      warnings.push('item #' + idx + ': event handlers only attach to "clip" items; ignored on a "' + ri.kind + '"');
+      common.events = null;
+    }
     if (ri.kind === 'rect') {
       items.push(makeItem('rect', {
         x: num(ri.x, 0), y: num(ri.y, 0), w: Math.max(1, num(ri.w, 10)), h: Math.max(1, num(ri.h, 10)),
         fill: normFill(ri.fill, [255, 255, 255, 255]),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'text') {
       items.push(makeItem('text', {
@@ -3756,7 +5601,9 @@ function loadProjectFromObject(obj) {
         color: normColor(ri.color, [255, 255, 255, 255]),
         varName: typeof ri.var === 'string' ? ri.var : '',
         width: ri.width !== undefined ? num(ri.width, null) : null,
-        hidden, posLocked, sizeLocked,
+        height: ri.height !== undefined ? num(ri.height, null) : null,
+        textOptions: normTextOptions(ri),
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'button') {
       items.push(makeItem('button', {
@@ -3770,7 +5617,7 @@ function loadProjectFromObject(obj) {
         labelSize: num(ri.label_size, 13),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'clip') {
       items.push(makeItem('clip', {
@@ -3779,7 +5626,7 @@ function loadProjectFromObject(obj) {
         color: normFill(ri.fill, [255, 255, 255, 255]),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'image') {
       if (typeof ri.data_url !== 'string' || !ri.data_url) {
@@ -3788,7 +5635,7 @@ function loadProjectFromObject(obj) {
         items.push(makeItem('image', {
           x: num(ri.x, 0), y: num(ri.y, 0), w: Math.max(1, num(ri.w, 10)), h: Math.max(1, num(ri.h, 10)),
           dataUrl: ri.data_url, naturalWidth: num(ri.w, 60), naturalHeight: num(ri.h, 60),
-          hidden, posLocked, sizeLocked,
+          hidden, posLocked, sizeLocked, ...common,
         }));
       }
     } else if (ri.kind === 'menu') {
@@ -3826,7 +5673,20 @@ let state = {
   currentTextColor: [235, 238, 242, 255],
   mode: 'edit', // 'edit' | 'play'
   multiSelectMode: false, // touch-friendly alternative to shift+click
+  currentFrame: 0, // which timeline frame the stage is showing
 };
+
+// True when `it` is on the frame the editor is currently showing. An item with
+// no explicit frame list is on every frame — that's the default, and it's what
+// keeps single-frame projects behaving as if frames didn't exist.
+function itemOnFrame(it, frame) {
+  return !it.frames || !it.frames.length || it.frames.indexOf(frame) >= 0;
+}
+
+// Items belonging to other frames stay on the canvas at low opacity rather
+// than vanishing, so you keep spatial context (and can still click them) while
+// editing one frame of a multi-frame HUD.
+const OFF_FRAME_ALPHA = 0.22;
 
 let playCtx = null; // { stage, items, interpreter } while state.mode === 'play'
 
@@ -3955,10 +5815,29 @@ function render() {
 
   if (!playing && state.snap && state.gridSize * state.zoom >= 4) drawGrid(ctx);
 
+  const hasFrames = !playing && state.stage.frames && state.stage.frames.length > 1;
   for (const it of items) {
     if (it.hidden) continue;
     if (playing && it._visible === false) continue;
-    drawItem(ctx, it, playing);
+    const offFrame = hasFrames && !itemOnFrame(it, state.currentFrame);
+    if (offFrame) {
+      ctx.save();
+      ctx.globalAlpha = OFF_FRAME_ALPHA;
+      drawItem(ctx, it, playing);
+      ctx.restore();
+    } else {
+      // An item's own alpha is an export-time colour transform; showing it here
+      // keeps the preview honest about what the movie will look like.
+      const a = it.alpha;
+      if (a !== null && a !== undefined && a < 1) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, a);
+        drawItem(ctx, it, playing);
+        ctx.restore();
+      } else {
+        drawItem(ctx, it, playing);
+      }
+    }
   }
 
   if (!playing) {
@@ -5132,6 +7011,107 @@ function buildItemPanel(it) {
     frag.appendChild(el('p', { class: 'small-note', text: 'Embedded losslessly (no recompression) as a DefineBitsLossless2 bitmap. This is the newest, least battle-tested part of the exporter — worth a quick in-engine check before you rely on it for real assets. See the Format reference for details.' }));
   }
 
+  frag.appendChild(buildTimelineSection(it));
+
+  const wrap = el('div');
+  wrap.appendChild(frag);
+  return wrap;
+}
+
+// -- timeline / placement section -------------------------------------------
+//
+// Only shown once a movie actually has frames, so a plain single-frame HUD's
+// properties panel looks exactly as it did before.
+
+function buildTimelineSection(it) {
+  const frag = document.createDocumentFragment();
+  const frames = state.stage.frames || [];
+
+  if (frames.length > 1) {
+    frag.appendChild(sectionTitle('Timeline'));
+    const all = !it.frames || !it.frames.length;
+    frag.appendChild(checkboxField('On every frame', 'prop-allframes', all, (v) => {
+      it.frames = v ? null : [state.currentFrame];
+      renderProperties(); render();
+    }));
+    if (!all) {
+      const row = el('div', { class: 'frame-pick' });
+      frames.forEach((label, i) => {
+        const on = it.frames.indexOf(i) >= 0;
+        const b = el('button', {
+          class: 'frame-chip small' + (on ? ' active' : ''),
+          title: (on ? 'Remove from' : 'Add to') + ' frame ' + (i + 1),
+          text: (i + 1) + (label ? ' · ' + label : ''),
+        });
+        b.addEventListener('click', () => {
+          pushHistory();
+          const set = new Set(it.frames);
+          if (set.has(i)) set.delete(i); else set.add(i);
+          // An item on no frames at all would silently never appear, so an
+          // empty selection falls back to "every frame" instead.
+          it.frames = set.size ? Array.from(set).sort((a, b2) => a - b2) : null;
+          renderProperties(); render(); renderLayers();
+        });
+        row.appendChild(b);
+      });
+      frag.appendChild(labeled('Appears on frames', row));
+    }
+  }
+
+  // Alpha is a placement colour transform, available with or without frames.
+  frag.appendChild(sectionTitle('Placement'));
+  const alphaPct = Math.round(((it.alpha === null || it.alpha === undefined) ? 1 : it.alpha) * 100);
+  frag.appendChild(numberField('Opacity (%)', 'prop-alpha', alphaPct, (v) => {
+    const pct = Math.max(0, Math.min(100, v));
+    it.alpha = pct >= 100 ? null : pct / 100;
+    render();
+  }, { min: 0, max: 100 }));
+
+  if (it.kind === 'clip') {
+    frag.appendChild(textField('Export as (attachMovie symbol)', 'prop-export', it.exportAs || '', (v) => {
+      it.exportAs = v.trim() || null;
+    }));
+    frag.appendChild(el('p', { class: 'small-note', text: 'Naming a symbol here emits an ExportAssets entry, so script can duplicate it at runtime with attachMovie("Name", ...).' }));
+    frag.appendChild(buildEventsEditor(it));
+  }
+
+  const wrap = el('div');
+  wrap.appendChild(frag);
+  return wrap;
+}
+
+// Clip event handlers. This is how the shipped game movies build interactive
+// UI — a movieclip carrying onRelease/onRollOver, rather than a Button
+// character (which appears 4 times total across the 42 movies sampled).
+const UI_CLIP_EVENTS = [
+  ['release', 'on release (click)'],
+  ['press', 'on press'],
+  ['rollOver', 'on roll over'],
+  ['rollOut', 'on roll out'],
+  ['enterFrame', 'every frame'],
+  ['load', 'on load'],
+];
+
+function buildEventsEditor(it) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(sectionTitle('Event handlers (AS2)'));
+  for (const [event, label] of UI_CLIP_EVENTS) {
+    const current = (it.events && it.events[event]) || '';
+    const ta = el('textarea', {
+      class: 'event-source', id: 'prop-ev-' + event, spellcheck: 'false', rows: '2',
+      placeholder: event === 'release' ? 'fscommand("myEvent", 1);' : '',
+    });
+    ta.value = current;
+    ta.addEventListener('focus', () => pushHistory());
+    ta.addEventListener('input', () => {
+      if (!it.events) it.events = {};
+      const v = ta.value;
+      if (v.trim()) it.events[event] = v; else delete it.events[event];
+      if (!Object.keys(it.events).length) it.events = null;
+    });
+    frag.appendChild(labeled(label, ta));
+  }
+  frag.appendChild(el('p', { class: 'small-note', text: 'Compiled at export and attached to this clip\'s placement. Compile & verify on the Script tab reports errors in these too.' }));
   const wrap = el('div');
   wrap.appendChild(frag);
   return wrap;
@@ -5147,6 +7127,100 @@ function uniqueClipNameExcluding(base, excludeId) {
 
 
 // ==== js/editor/layers-script.js ====
+
+// -- frames bar -------------------------------------------------------------------
+//
+// A movie with no declared frames is a single unlabelled frame, and the bar
+// collapses to a single "add frames" affordance so nothing changes for the
+// single-frame projects that are still the common case.
+
+function renderFramesBar() {
+  const bar = document.getElementById('framesBar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const frames = state.stage.frames || [];
+
+  if (!frames.length) {
+    const hint = el('button', {
+      class: 'mini-btn', id: 'btnAddFirstFrame',
+      title: 'Split this movie into named timeline frames, so script can gotoAndStop("name")',
+      text: '+ Add timeline frames',
+    });
+    hint.addEventListener('click', () => {
+      pushHistory();
+      // Frame 0 holds everything that already exists; frame 1 starts empty.
+      state.stage.frames = ['frame1', 'frame2'];
+      state.currentFrame = 0;
+      afterStructuralChange();
+    });
+    bar.appendChild(hint);
+    return;
+  }
+
+  bar.appendChild(el('span', { class: 'frames-label', text: 'Frames' }));
+  frames.forEach((label, i) => {
+    const chip = el('button', {
+      class: 'frame-chip' + (i === state.currentFrame ? ' active' : ''),
+      title: 'Show frame ' + (i + 1) + (label ? ' ("' + label + '")' : '') + ' — double-click to rename',
+      text: (i + 1) + (label ? ' · ' + label : ''),
+    });
+    chip.addEventListener('click', () => {
+      state.currentFrame = i;
+      render(); renderFramesBar(); renderProperties(); renderLayers();
+    });
+    chip.addEventListener('dblclick', () => {
+      const next = prompt('Frame label (script uses this with gotoAndStop):', label || '');
+      if (next === null) return;
+      pushHistory();
+      state.stage.frames[i] = next.trim();
+      afterStructuralChange();
+    });
+    bar.appendChild(chip);
+  });
+
+  const add = el('button', { class: 'mini-btn', title: 'Add a frame at the end', text: '+' });
+  add.addEventListener('click', () => {
+    pushHistory();
+    state.stage.frames.push('frame' + (state.stage.frames.length + 1));
+    state.currentFrame = state.stage.frames.length - 1;
+    afterStructuralChange();
+  });
+  bar.appendChild(add);
+
+  const del = el('button', {
+    class: 'mini-btn', title: 'Delete the current frame', text: '✕',
+  });
+  del.addEventListener('click', () => {
+    const frames = state.stage.frames;
+    if (frames.length <= 1) {
+      // Dropping to zero frames means "back to a plain single-frame movie",
+      // so clear every item's now-meaningless frame membership too.
+      pushHistory();
+      state.stage.frames = [];
+      for (const it of state.items) it.frames = null;
+      state.currentFrame = 0;
+      afterStructuralChange();
+      return;
+    }
+    const gone = state.currentFrame;
+    pushHistory();
+    frames.splice(gone, 1);
+    // Re-index membership around the removed frame: anything pinned only to it
+    // becomes "every frame" rather than silently disappearing.
+    for (const it of state.items) {
+      if (!it.frames) continue;
+      const next = it.frames.filter(f => f !== gone).map(f => (f > gone ? f - 1 : f));
+      it.frames = next.length ? next : null;
+    }
+    state.currentFrame = Math.min(gone, frames.length - 1);
+    afterStructuralChange();
+  });
+  bar.appendChild(del);
+  bar.appendChild(el('span', {
+    class: 'small-note frames-note',
+    text: 'Dimmed items live on other frames. Script: gotoAndStop("label").',
+  }));
+}
 
 // -- layers panel ---------------------------------------------------------------
 
@@ -5253,27 +7327,43 @@ function buildMovieFromState() {
   const m = new GFMovie.Movie(st.width, st.height, {
     fps: st.fps, name: st.name, background: st.background,
     fontName: st.fontName, fontUrl: st.fontUrl,
+    frames: (st.frames && st.frames.length) ? st.frames : null,
   });
+  // Placement extras every kind shares. `frames: null` means "on every frame",
+  // which is what an item gets until it is explicitly assigned to some.
+  const common = (it) => ({ frames: it.frames || null, alpha: it.alpha ?? null });
   for (const it of state.items) {
     if (it.hidden) continue;
     if (it.kind === 'rect') {
-      m.rect(it.x, it.y, it.w, it.h, it.fill, { radius: it.radius || 0, stroke: it.stroke || null });
+      m.rect(it.x, it.y, it.w, it.h, it.fill, {
+        radius: it.radius || 0, stroke: it.stroke || null, ...common(it),
+      });
     } else if (it.kind === 'text') {
-      m.text(it.x, it.y, it.text, { size: it.size, color: it.color, varName: it.varName || null, width: it.w });
+      m.text(it.x, it.y, it.text, {
+        size: it.size, color: it.color, varName: it.varName || null, width: it.w,
+        height: it.height ?? null, ...common(it), ...(it.textOptions || {}),
+      });
     } else if (it.kind === 'button') {
       m.button(it.x, it.y, it.w, it.h, it.event, {
         arg: it.arg, fill: it.fill, hover: it.hover,
         label: it.label || null, labelColor: it.labelColor, labelSize: it.labelSize,
-        radius: it.radius || 0, stroke: it.stroke || null,
+        radius: it.radius || 0, stroke: it.stroke || null, frames: it.frames || null,
       });
     } else if (it.kind === 'clip') {
-      m.clip(it.name, it.x, it.y, it.w, it.h, it.color, { radius: it.radius || 0, stroke: it.stroke || null });
+      m.clip(it.name, it.x, it.y, it.w, it.h, it.color, {
+        radius: it.radius || 0, stroke: it.stroke || null,
+        events: it.events || null, scale9: it.scale9 || null, ...common(it),
+      });
     } else if (it.kind === 'image') {
       if (!it.__imageData) {
         throw new Error(`image at (${Math.round(it.x)},${Math.round(it.y)}) hasn't finished loading yet — wait a moment and try again`);
       }
-      m.image(it.x, it.y, it.w, it.h, it.__imageData);
+      m.image(it.x, it.y, it.w, it.h, it.__imageData, common(it));
+    } else {
+      continue;
     }
+    // exportAs applies to whatever was just added, so it has to follow it.
+    if (it.exportAs) m.exportAs(it.exportAs);
   }
   if (state.script && state.script.trim()) {
     m.script(Compiler.compileSource(state.script));
@@ -5833,7 +7923,12 @@ function wireTabs() {
 
 function afterStructuralChange() {
   attachAllImageRuntimes(state.items);
+  // Clamp first: loading a project (or deleting a frame) can leave the current
+  // frame pointing past the end of the new timeline.
+  const frameCount = Math.max(1, (state.stage.frames || []).length);
+  if (state.currentFrame >= frameCount) state.currentFrame = frameCount - 1;
   render();
+  renderFramesBar();
   renderProperties();
   renderLayers();
   document.getElementById('scriptText').value = state.script;
@@ -6370,7 +8465,13 @@ function buildHelpBody() {
   "stage": {
     "width": 380, "height": 150, "fps": 30, "name": "hud",
     "background": [22,24,28],
-    "font_name": "_normal_Font", "font_url": "_normal_Font.swf"
+    "font_name": "_normal_Font", "font_url": "_normal_Font.swf",
+    "frames": ["idle","alert"]
+    // optional. Declares a timeline of named frames, which script reaches
+    // with gotoAndStop("alert") / gotoAndPlay("idle"). Omit it (or use one
+    // frame) for an ordinary static HUD. A multi-frame movie gets an
+    // implicit stop() on frame 1 so it holds its first state instead of
+    // cycling. This is how the game's own menus model UI state.
   },
   "items": [
     { "kind": "rect", "x":0, "y":0, "w":380, "h":30, "fill":[232,140,24] },
@@ -6390,6 +8491,16 @@ function buildHelpBody() {
       "color":[25,25,25], "var":"hp_val", "width":100 },
       // "var" is optional -- set it to bind a live/host-updatable field
 
+    { "kind": "text", "x":14, "y":40, "text":"Long wrapped body copy",
+      "size":12, "color":[220,220,220], "width":200, "height":60,
+      "multiline": true, "word_wrap": true, "align":"center",
+      "html": false, "border": false, "selectable": false,
+      "leading": 2, "max_length": null },
+      // All optional. Without them a text field is a single read-only
+      // non-selectable line, which is what it always used to be. "height"
+      // only matters once "multiline" is on. "align" is left/right/center/
+      // justify.
+
     { "kind": "button", "x":20, "y":90, "w":120, "h":24, "event":"quit",
       "arg": null, "label":"QUIT",
       "fill":[52,58,68], "hover":[74,82,96],
@@ -6399,6 +8510,24 @@ function buildHelpBody() {
     { "kind": "clip", "name":"bar", "x":4, "y":44, "w":100, "h":8,
       "fill":[0,200,0] },
       // named MovieClip -- the only thing script/host can move by name
+
+    { "kind": "clip", "name":"fireBtn", "x":20, "y":60, "w":90, "h":24,
+      "fill":[52,58,68],
+      "events": { "release": "fscommand(\\"fire\\", 1);",
+                  "rollOver": "_root.fireBtn._alpha = 100;",
+                  "rollOut":  "_root.fireBtn._alpha = 70;" },
+      "export": "FireButton",
+      "scale9": { "left":6, "top":6, "right":84, "bottom":18 } },
+      // "events" attaches AS2 handlers to this clip's placement -- press,
+      // release, releaseOutside, rollOver, rollOut, dragOver, dragOut,
+      // enterFrame, load, unload, keyDown, keyUp. This is how the game's own
+      // UI does interaction; "button" below uses a real Button character,
+      // which the shipped movies barely touch.
+      // "export" emits an ExportAssets entry so script can attachMovie() it.
+      // "scale9" marks 9-slice guides (clip-local coords) so corners keep
+      // their size when the clip is scaled.
+      // Handlers only apply to "clip" items; on any other kind they're
+      // ignored with a warning.
 
     { "kind": "image", "x":10, "y":10, "w":32, "h":32,
       "data_url": "data:image/png;base64,...." },
@@ -6413,6 +8542,14 @@ function buildHelpBody() {
       // generated SetSelected(i) function on load. Re-saving the
       // project emits the expanded (button/clip) form, not "menu".
   ],
+  // Every item also accepts these two, whatever its kind:
+  //   "frames": [0]     which timeline frames it appears on (0-based).
+  //                     Omit for "every frame", which is the default and
+  //                     the only sensible answer without a timeline.
+  //                     Content on one frame but not the next is removed
+  //                     with RemoveObject2 and re-placed at the same depth
+  //                     if it comes back later.
+  //   "alpha": 0.5      placement opacity, 0..1. Omit (or 1) for opaque.
   "script": "function SetHealth(n) {\n  _root.hp_val = n;\n}\n"
 }`;
   body.innerHTML = '';
@@ -6425,7 +8562,8 @@ function buildHelpBody() {
 "lock_size": true    // handles hidden (still movable)` }));
 
   body.appendChild(sectionTitle('Script'));
-  body.appendChild(el('p', { class: 'small-note', text: 'Plain gfxforge AS2-subset source (same editor as the Script tab): literals (incl. arrays [1,2,3]), variables, obj.member / obj[key], + - * / % and += -= *= /= %=, comparisons, && ||, ! -, calls, fscommand("evt", x), if/else, while, for(;;), break, continue, function, return. Compile errors report a line and column.' }));
+  body.appendChild(el('p', { class: 'small-note', text: 'Plain gfxforge AS2-subset source (same editor as the Script tab). Literals: numbers (decimal and 0xHEX), strings, booleans, null, undefined, arrays [1,2,3], objects {a:1}. Expressions: variables, this, obj.member, obj[key], calls, method calls, new C(a), function expressions, ternary c ? a : b. Operators: + - * / % , comparisons including === and !==, && || (short-circuiting), ! - + ~, typeof, delete, instanceof, bitwise & | ^ << >> >>>, ++ and -- in both fixities, and compound assignment (+= -= *= /= %= &= |= ^= <<= >>= >>>=). Statements: if/else, while, do/while, for(;;), for-in, switch/case/default, break, continue, var, function, return, fscommand("evt", x). Built-ins that lower to single opcodes: trace(), random(n), getTimer(), int(), Number(), String(), ord(), chr(), and the timeline verbs play(), stop(), gotoAndStop(f), gotoAndPlay(f). Compile errors report a line and column.' }));
+  body.appendChild(el('p', { class: 'small-note', text: 'Not supported on purpose: try/catch/throw. This player routes the try opcode to its "unsupported opcode" branch, so a movie using it would load and then silently skip the handler — better to fail at compile time than to ship that. Also note && and || return the operand value (as in real AS2), not a coerced boolean, and var inside a function is a true local rather than a _root global.' }));
 
   body.appendChild(sectionTitle('Confidence notes'));
   body.appendChild(el('p', { class: 'small-note', text: 'The core codec (shapes, text, buttons, AVM1 scripting) is checked byte-for-byte against the original Python gfxforge library and is solid. Gradients/strokes/rounded corners are new and independently verified by decoding the encoder\'s own output and checking the geometry, since no external reference exists for that part of the SWF spec. Image import is the newest and least-verified piece -- the zlib compression is checked against Python\'s real zlib, but the exact bitmap pixel format has no reference to check against, so treat it as experimental and check a test image in-engine before relying on it for real assets.' }));
@@ -6465,6 +8603,7 @@ function init() {
   setTool('select');
   fitZoom();
   updateHistoryButtons();
+  renderFramesBar();
   wireLuaPanel();
   wireResizers();
 }

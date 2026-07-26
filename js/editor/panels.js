@@ -415,6 +415,107 @@ function buildItemPanel(it) {
     frag.appendChild(el('p', { class: 'small-note', text: 'Embedded losslessly (no recompression) as a DefineBitsLossless2 bitmap. This is the newest, least battle-tested part of the exporter — worth a quick in-engine check before you rely on it for real assets. See the Format reference for details.' }));
   }
 
+  frag.appendChild(buildTimelineSection(it));
+
+  const wrap = el('div');
+  wrap.appendChild(frag);
+  return wrap;
+}
+
+// -- timeline / placement section -------------------------------------------
+//
+// Only shown once a movie actually has frames, so a plain single-frame HUD's
+// properties panel looks exactly as it did before.
+
+function buildTimelineSection(it) {
+  const frag = document.createDocumentFragment();
+  const frames = state.stage.frames || [];
+
+  if (frames.length > 1) {
+    frag.appendChild(sectionTitle('Timeline'));
+    const all = !it.frames || !it.frames.length;
+    frag.appendChild(checkboxField('On every frame', 'prop-allframes', all, (v) => {
+      it.frames = v ? null : [state.currentFrame];
+      renderProperties(); render();
+    }));
+    if (!all) {
+      const row = el('div', { class: 'frame-pick' });
+      frames.forEach((label, i) => {
+        const on = it.frames.indexOf(i) >= 0;
+        const b = el('button', {
+          class: 'frame-chip small' + (on ? ' active' : ''),
+          title: (on ? 'Remove from' : 'Add to') + ' frame ' + (i + 1),
+          text: (i + 1) + (label ? ' · ' + label : ''),
+        });
+        b.addEventListener('click', () => {
+          pushHistory();
+          const set = new Set(it.frames);
+          if (set.has(i)) set.delete(i); else set.add(i);
+          // An item on no frames at all would silently never appear, so an
+          // empty selection falls back to "every frame" instead.
+          it.frames = set.size ? Array.from(set).sort((a, b2) => a - b2) : null;
+          renderProperties(); render(); renderLayers();
+        });
+        row.appendChild(b);
+      });
+      frag.appendChild(labeled('Appears on frames', row));
+    }
+  }
+
+  // Alpha is a placement colour transform, available with or without frames.
+  frag.appendChild(sectionTitle('Placement'));
+  const alphaPct = Math.round(((it.alpha === null || it.alpha === undefined) ? 1 : it.alpha) * 100);
+  frag.appendChild(numberField('Opacity (%)', 'prop-alpha', alphaPct, (v) => {
+    const pct = Math.max(0, Math.min(100, v));
+    it.alpha = pct >= 100 ? null : pct / 100;
+    render();
+  }, { min: 0, max: 100 }));
+
+  if (it.kind === 'clip') {
+    frag.appendChild(textField('Export as (attachMovie symbol)', 'prop-export', it.exportAs || '', (v) => {
+      it.exportAs = v.trim() || null;
+    }));
+    frag.appendChild(el('p', { class: 'small-note', text: 'Naming a symbol here emits an ExportAssets entry, so script can duplicate it at runtime with attachMovie("Name", ...).' }));
+    frag.appendChild(buildEventsEditor(it));
+  }
+
+  const wrap = el('div');
+  wrap.appendChild(frag);
+  return wrap;
+}
+
+// Clip event handlers. This is how the shipped game movies build interactive
+// UI — a movieclip carrying onRelease/onRollOver, rather than a Button
+// character (which appears 4 times total across the 42 movies sampled).
+const UI_CLIP_EVENTS = [
+  ['release', 'on release (click)'],
+  ['press', 'on press'],
+  ['rollOver', 'on roll over'],
+  ['rollOut', 'on roll out'],
+  ['enterFrame', 'every frame'],
+  ['load', 'on load'],
+];
+
+function buildEventsEditor(it) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(sectionTitle('Event handlers (AS2)'));
+  for (const [event, label] of UI_CLIP_EVENTS) {
+    const current = (it.events && it.events[event]) || '';
+    const ta = el('textarea', {
+      class: 'event-source', id: 'prop-ev-' + event, spellcheck: 'false', rows: '2',
+      placeholder: event === 'release' ? 'fscommand("myEvent", 1);' : '',
+    });
+    ta.value = current;
+    ta.addEventListener('focus', () => pushHistory());
+    ta.addEventListener('input', () => {
+      if (!it.events) it.events = {};
+      const v = ta.value;
+      if (v.trim()) it.events[event] = v; else delete it.events[event];
+      if (!Object.keys(it.events).length) it.events = null;
+    });
+    frag.appendChild(labeled(label, ta));
+  }
+  frag.appendChild(el('p', { class: 'small-note', text: 'Compiled at export and attached to this clip\'s placement. Compile & verify on the Script tab reports errors in these too.' }));
   const wrap = el('div');
   wrap.appendChild(frag);
   return wrap;

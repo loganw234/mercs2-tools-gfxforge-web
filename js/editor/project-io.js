@@ -72,7 +72,69 @@ function defaultStage() {
     width: 380, height: 150, fps: 30, name: 'movie',
     background: [22, 24, 28, 255],
     fontName: '_normal_Font', fontUrl: '_normal_Font.swf',
+    // Timeline frames, as labels. An empty list is a single unlabelled frame,
+    // which is what every project was before frames existed.
+    frames: [],
   };
+}
+
+// Clip event names that can carry a handler, in the order they're offered in
+// the UI. These are the subset of GFx's clip events that make sense for HUD
+// authoring — the full wire set is in Swf.CLIP_EVENT.
+const CLIP_EVENT_NAMES = ['press', 'release', 'releaseOutside', 'rollOver', 'rollOut',
+  'dragOver', 'dragOut', 'enterFrame', 'load', 'unload', 'keyDown', 'keyUp'];
+
+function normEvents(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const name of CLIP_EVENT_NAMES) {
+    const src = raw[name];
+    if (typeof src === 'string' && src.trim()) out[name] = src;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// Frame membership: an array of frame indices, or null for "every frame".
+function normItemFrames(raw, frameCount) {
+  if (raw === null || raw === undefined) return null;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  for (const v of list) {
+    const n = Math.trunc(num(v, -1));
+    if (n >= 0 && n < Math.max(1, frameCount)) out.push(n);
+  }
+  if (!out.length) return null;
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+function normScale9(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const left = num(raw.left, 0), top = num(raw.top, 0);
+  const right = num(raw.right, 0), bottom = num(raw.bottom, 0);
+  if (right <= left || bottom <= top) return null;
+  return { left, top, right, bottom };
+}
+
+function normAlpha(raw) {
+  if (raw === null || raw === undefined) return null;
+  const n = num(raw, 1);
+  if (!(n >= 0) || n >= 1) return null;   // 1 (or nonsense) means "no transform"
+  return n;
+}
+
+const TEXT_ALIGNS = ['left', 'right', 'center', 'justify'];
+
+function normTextOptions(ri) {
+  const o = {};
+  if (ri.multiline) o.multiline = true;
+  if (ri.word_wrap) o.wordWrap = true;
+  if (ri.html) o.html = true;
+  if (ri.border) o.border = true;
+  if (ri.selectable) o.selectable = true;
+  if (typeof ri.align === 'string' && TEXT_ALIGNS.indexOf(ri.align) >= 0) o.align = ri.align;
+  if (ri.leading !== undefined) o.leading = num(ri.leading, 0);
+  if (ri.max_length !== undefined) o.maxLength = Math.max(0, Math.trunc(num(ri.max_length, 0))) || null;
+  return Object.keys(o).length ? o : null;
 }
 
 function defaultItemFields(kind, x, y) {
@@ -190,6 +252,13 @@ function serializeItem(it) {
   if (it.hidden) out.hidden = true;
   if (it.posLocked) out.lock_pos = true;
   if (it.sizeLocked) out.lock_size = true;
+  // Timeline and placement extras, omitted when they're at their defaults so
+  // single-frame projects round-trip to exactly the JSON they had before.
+  if (it.frames && it.frames.length) out.frames = it.frames.slice();
+  if (it.alpha !== null && it.alpha !== undefined) out.alpha = it.alpha;
+  if (it.events) out.events = Object.assign({}, it.events);
+  if (it.exportAs) out.export = it.exportAs;
+  if (it.scale9) out.scale9 = Object.assign({}, it.scale9);
   if (it.kind === 'rect') {
     Object.assign(out, { x: it.x, y: it.y, w: it.w, h: it.h, fill: it.fill });
     if (it.radius) out.radius = it.radius;
@@ -198,6 +267,18 @@ function serializeItem(it) {
     Object.assign(out, { x: it.x, y: it.y, text: it.text, size: it.size, color: it.color });
     if (it.varName) out.var = it.varName;
     if (it.width !== null && it.width !== undefined) out.width = it.width;
+    if (it.height !== null && it.height !== undefined) out.height = it.height;
+    const t = it.textOptions;
+    if (t) {
+      if (t.multiline) out.multiline = true;
+      if (t.wordWrap) out.word_wrap = true;
+      if (t.html) out.html = true;
+      if (t.border) out.border = true;
+      if (t.selectable) out.selectable = true;
+      if (t.align) out.align = t.align;
+      if (t.leading) out.leading = t.leading;
+      if (t.maxLength) out.max_length = t.maxLength;
+    }
   } else if (it.kind === 'button') {
     Object.assign(out, { x: it.x, y: it.y, w: it.w, h: it.h, event: it.event });
     if (it.arg !== null && it.arg !== undefined) out.arg = it.arg;
@@ -223,11 +304,11 @@ function serializeItem(it) {
 function serializeProject() {
   return {
     version: 1,
-    stage: {
+    stage: Object.assign({
       width: state.stage.width, height: state.stage.height, fps: state.stage.fps,
       name: state.stage.name, background: state.stage.background,
       font_name: state.stage.fontName, font_url: state.stage.fontUrl,
-    },
+    }, (state.stage.frames && state.stage.frames.length) ? { frames: state.stage.frames.slice() } : {}),
     items: state.items.map(serializeItem),
     script: state.script || '',
   };
@@ -293,7 +374,13 @@ function loadProjectFromObject(obj) {
     background: normColor(s.background, [22, 24, 28, 255]),
     fontName: typeof s.font_name === 'string' ? s.font_name : '_normal_Font',
     fontUrl: typeof s.font_url === 'string' ? s.font_url : '_normal_Font.swf',
+    // Frames are declared as a list of labels; an entry may be null/"" for an
+    // unlabelled frame that still exists on the timeline.
+    frames: Array.isArray(s.frames)
+      ? s.frames.map(f => (typeof f === 'string' ? f : (f && typeof f.label === 'string' ? f.label : '')))
+      : [],
   };
+  const frameCount = Math.max(1, stage.frames.length);
 
   const rawItems = Array.isArray(obj.items) ? obj.items : [];
   const items = [];
@@ -307,13 +394,27 @@ function loadProjectFromObject(obj) {
     const hidden = !!ri.hidden;
     const posLocked = !!ri.lock_pos;
     const sizeLocked = !!ri.lock_size;
+    // Placement extras every kind understands. `frames` indices outside the
+    // declared range are dropped rather than rejected, so trimming the frame
+    // list doesn't invalidate a whole project.
+    const common = {
+      frames: normItemFrames(ri.frames, frameCount),
+      alpha: normAlpha(ri.alpha),
+      events: normEvents(ri.events),
+      exportAs: typeof ri.export === 'string' && ri.export ? ri.export : null,
+      scale9: normScale9(ri.scale9),
+    };
+    if (common.events && ri.kind !== 'clip') {
+      warnings.push('item #' + idx + ': event handlers only attach to "clip" items; ignored on a "' + ri.kind + '"');
+      common.events = null;
+    }
     if (ri.kind === 'rect') {
       items.push(makeItem('rect', {
         x: num(ri.x, 0), y: num(ri.y, 0), w: Math.max(1, num(ri.w, 10)), h: Math.max(1, num(ri.h, 10)),
         fill: normFill(ri.fill, [255, 255, 255, 255]),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'text') {
       items.push(makeItem('text', {
@@ -323,7 +424,9 @@ function loadProjectFromObject(obj) {
         color: normColor(ri.color, [255, 255, 255, 255]),
         varName: typeof ri.var === 'string' ? ri.var : '',
         width: ri.width !== undefined ? num(ri.width, null) : null,
-        hidden, posLocked, sizeLocked,
+        height: ri.height !== undefined ? num(ri.height, null) : null,
+        textOptions: normTextOptions(ri),
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'button') {
       items.push(makeItem('button', {
@@ -337,7 +440,7 @@ function loadProjectFromObject(obj) {
         labelSize: num(ri.label_size, 13),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'clip') {
       items.push(makeItem('clip', {
@@ -346,7 +449,7 @@ function loadProjectFromObject(obj) {
         color: normFill(ri.fill, [255, 255, 255, 255]),
         radius: Math.max(0, num(ri.radius, 0)),
         stroke: normStroke(ri.stroke),
-        hidden, posLocked, sizeLocked,
+        hidden, posLocked, sizeLocked, ...common,
       }));
     } else if (ri.kind === 'image') {
       if (typeof ri.data_url !== 'string' || !ri.data_url) {
@@ -355,7 +458,7 @@ function loadProjectFromObject(obj) {
         items.push(makeItem('image', {
           x: num(ri.x, 0), y: num(ri.y, 0), w: Math.max(1, num(ri.w, 10)), h: Math.max(1, num(ri.h, 10)),
           dataUrl: ri.data_url, naturalWidth: num(ri.w, 60), naturalHeight: num(ri.h, 60),
-          hidden, posLocked, sizeLocked,
+          hidden, posLocked, sizeLocked, ...common,
         }));
       }
     } else if (ri.kind === 'menu') {

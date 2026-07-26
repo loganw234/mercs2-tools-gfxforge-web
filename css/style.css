@@ -259,6 +259,59 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex-shrink: 0;
 }
 .layer-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Frames bar: pinned to the bottom of the canvas area rather than placed in
+   its flow, so it can't disturb the stage's centring. */
+.frames-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: rgba(18, 19, 23, 0.92);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.frames-label {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  margin-right: 2px;
+}
+.frames-note { margin-left: auto; }
+.frame-chip {
+  background: #22242b;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-faint);
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.frame-chip:hover { color: var(--text); border-color: #4a4f57; }
+.frame-chip.active {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #10151a;
+  font-weight: 600;
+}
+.frame-chip.small { padding: 2px 6px; }
+.frame-pick { display: flex; flex-wrap: wrap; gap: 4px; }
+.event-source {
+  width: 100%;
+  min-height: 42px;
+  resize: vertical;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .mini-btn {
   background: transparent;
   border: none;

@@ -44,9 +44,37 @@ function walkAvm1(code, ctx, out) {
         throw new VerifyError(`${ctx}: malformed DefineFunction header`);
       }
       if (o + codesize > code.length) throw new VerifyError(`${ctx}: function ${JSON.stringify(name)} body overruns`);
-      out.push(name);
-      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name}`, out);
+      // an anonymous definition is a function *expression* — it has no name to
+      // report, but its body still has to be walked
+      if (name) out.push(name);
+      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name || '<anonymous>'}`, out);
       o += codesize;
+    } else if (op === 0x8e) { // DefineFunction2: same idea, richer header
+      let name, q, nparams, codesize;
+      try {
+        const nul1 = pl.indexOf(0);
+        name = String.fromCharCode(...pl.subarray(0, nul1));
+        q = nul1 + 1;
+        nparams = u16(pl, q); q += 2;
+        q += 1;            // registerCount
+        q += 2;            // flags
+        for (let i = 0; i < nparams; i++) {
+          q += 1;          // this parameter's register assignment
+          q = pl.indexOf(0, q) + 1;
+        }
+        codesize = u16(pl, q);
+      } catch (e) {
+        throw new VerifyError(`${ctx}: malformed DefineFunction2 header`);
+      }
+      if (o + codesize > code.length) throw new VerifyError(`${ctx}: function ${JSON.stringify(name)} body overruns`);
+      if (name) out.push(name);
+      walkAvm1(code.subarray(o, o + codesize), `${ctx}/${name || '<anonymous>'}`, out);
+      o += codesize;
+    } else if (op === 0x94) { // With: [u16 code size] then the block, inline
+      const size = u16(pl, 0);
+      if (o + size > code.length) throw new VerifyError(`${ctx}: with-block overruns`);
+      walkAvm1(code.subarray(o, o + size), `${ctx}/with`, out);
+      o += size;
     } else if (op === 0x99 || op === 0x9d) { // Jump / If: target must stay in range
       const off = i16(pl, 0);
       const tgt = o + off;
@@ -119,5 +147,8 @@ function verifyMovie(movie, require = null) {
   return verifyGfx(movie.build(), require);
 }
 
-  return { VerifyError, verifyGfx, verifyMovie };
+  // walkAvm1 is exposed so tests can check a bare action stream (not just a
+  // whole movie) with a reader that was written from the format rather than by
+  // inverting the assembler.
+  return { VerifyError, verifyGfx, verifyMovie, _walkAvm1: walkAvm1 };
 })();

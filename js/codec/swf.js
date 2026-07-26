@@ -245,17 +245,67 @@ function defineShapeEx(shapeId, x1, y1, x2, y2, options = {}) {
   return tag(32, body);
 }
 
-function defineEditText(charId, x1, y1, x2, y2, fontId, sizePx, text, color, varname = '') {
+// DefineEditText flag bits, split across the two flag bytes that follow the
+// bounds. The original encoder hard-coded these as 0x8d,0x11 — which is
+// HasText|ReadOnly|HasTextColor|HasFont plus NoSelect|UseOutlines, i.e. a
+// single-line read-only field and no way to ask for anything else.
+const EDIT_FLAGS0 = {
+  HAS_TEXT: 0x80, WORD_WRAP: 0x40, MULTILINE: 0x20, PASSWORD: 0x10,
+  READ_ONLY: 0x08, HAS_TEXT_COLOR: 0x04, HAS_MAX_LENGTH: 0x02, HAS_FONT: 0x01,
+};
+const EDIT_FLAGS1 = {
+  HAS_FONT_CLASS: 0x80, AUTO_SIZE: 0x40, HAS_LAYOUT: 0x20, NO_SELECT: 0x10,
+  BORDER: 0x08, WAS_STATIC: 0x04, HTML: 0x02, USE_OUTLINES: 0x01,
+};
+const TEXT_ALIGN = { left: 0, right: 1, center: 2, justify: 3 };
+
+// options:
+//   multiline, wordWrap, html, border, password, selectable, autoSize (bools)
+//   align: 'left'|'right'|'center'|'justify'
+//   leftMargin/rightMargin/indent/leading: px (any of these forces a LAYOUT
+//     record, which `align` also requires)
+//   maxLength: number
+//
+// Defaults reproduce the original hard-coded flags exactly, so existing
+// callers that pass no options get byte-identical output.
+function defineEditText(charId, x1, y1, x2, y2, fontId, sizePx, text, color, varname = '', options = {}) {
+  const {
+    multiline = false, wordWrap = false, html = false, border = false,
+    password = false, selectable = false, autoSize = false, readOnly = true,
+    align = null, leftMargin = 0, rightMargin = 0, indent = 0, leading = 0,
+    maxLength = null, useOutlines = true,
+  } = options;
+
   const X1 = px(x1), Y1 = px(y1), X2 = px(x2), Y2 = px(y2);
-  const body = concatBytes(
-    u16le(charId),
-    encodeRect(X1, X2, Y1, Y2),
-    u8(0x8d, 0x11),
-    u16le(fontId), u16le(px(sizePx)),
-    rgba(color),
-    cstr(varname),
-    cstr(text)
-  );
+  const needLayout = align !== null || leftMargin || rightMargin || indent || leading;
+
+  let f0 = EDIT_FLAGS0.HAS_TEXT | EDIT_FLAGS0.HAS_TEXT_COLOR | EDIT_FLAGS0.HAS_FONT;
+  if (wordWrap) f0 |= EDIT_FLAGS0.WORD_WRAP;
+  if (multiline) f0 |= EDIT_FLAGS0.MULTILINE;
+  if (password) f0 |= EDIT_FLAGS0.PASSWORD;
+  if (readOnly) f0 |= EDIT_FLAGS0.READ_ONLY;
+  if (maxLength !== null) f0 |= EDIT_FLAGS0.HAS_MAX_LENGTH;
+
+  let f1 = 0;
+  if (useOutlines) f1 |= EDIT_FLAGS1.USE_OUTLINES;
+  if (!selectable) f1 |= EDIT_FLAGS1.NO_SELECT;
+  if (border) f1 |= EDIT_FLAGS1.BORDER;
+  if (html) f1 |= EDIT_FLAGS1.HTML;
+  if (autoSize) f1 |= EDIT_FLAGS1.AUTO_SIZE;
+  if (needLayout) f1 |= EDIT_FLAGS1.HAS_LAYOUT;
+
+  // Field order is fixed: flags, [font id + height], [colour], [max length],
+  // [layout], variable name, initial text.
+  let body = concatBytes(u16le(charId), encodeRect(X1, X2, Y1, Y2), u8(f0, f1));
+  body = concatBytes(body, u16le(fontId), u16le(px(sizePx)));
+  body = concatBytes(body, rgba(color));
+  if (maxLength !== null) body = concatBytes(body, u16le(maxLength));
+  if (needLayout) {
+    const a = align === null ? 0 : (TEXT_ALIGN[align] ?? 0);
+    body = concatBytes(body, u8(a),
+      u16le(px(leftMargin)), u16le(px(rightMargin)), u16le(px(indent)), u16le(px(leading)));
+  }
+  body = concatBytes(body, cstr(varname), cstr(text));
   return tag(37, body);
 }
 
@@ -265,6 +315,171 @@ function placeObject(charId, depth, matrix = IDENTITY_MATRIX) {
 
 function placeNamed(charId, depth, name, matrix = IDENTITY_MATRIX) {
   return tag(26, concatBytes(u8(0x26), u16le(depth), u16le(charId), matrix, cstr(name)));
+}
+
+// -- CXFORMWITHALPHA ---------------------------------------------------------
+//
+// Field order per GFxStream::ReadCxformRgba: HasAddTerms(1), HasMultTerms(1),
+// Nbits(4), then the multiply terms, then the add terms. Two details that are
+// easy to get backwards: the *add* flag is the first bit even though the
+// *mult* terms come first in the payload, and multiply factors are fixed-point
+// over 256, not 255 — the SDK comment is explicit that "multiply factor 1.0
+// has value 0x100, not 0xFF".
+//
+// mult: {r,g,b,a} as 0..1 multipliers (1 = unchanged)
+// add:  {r,g,b,a} as -255..255 offsets (0 = unchanged)
+function encodeCxform(mult = null, add = null) {
+  const m = mult ? [mult.r ?? 1, mult.g ?? 1, mult.b ?? 1, mult.a ?? 1].map(v => Math.round(v * 256)) : null;
+  const a = add ? [add.r ?? 0, add.g ?? 0, add.b ?? 0, add.a ?? 0].map(v => Math.round(v)) : null;
+  const w = new BitWriter();
+  const terms = [].concat(m || [], a || []);
+  const nb = terms.length ? sbitsNeeded(...terms) : 1;
+  w.ubits(a ? 1 : 0, 1).ubits(m ? 1 : 0, 1).ubits(nb, 4);
+  if (m) for (const v of m) w.sbits(v, nb);
+  if (a) for (const v of a) w.sbits(v, nb);
+  return w.flush();
+}
+
+// Convenience: a colour transform that only changes alpha, which is what HUD
+// work almost always wants (fading a panel in or out).
+function alphaCxform(alpha01) {
+  return encodeCxform({ r: 1, g: 1, b: 1, a: alpha01 }, null);
+}
+
+const PLACE = {
+  HAS_CLIP_ACTIONS: 0x01, HAS_CHARACTER: 0x02, HAS_MATRIX: 0x04,
+  HAS_COLOR_TRANSFORM: 0x08, HAS_RATIO: 0x10, HAS_NAME: 0x20,
+  HAS_CLIP_DEPTH: 0x40, MOVE: 0x80,
+};
+
+// Full PlaceObject2. Field order is fixed by the format:
+//   flags, depth, [charId], [matrix], [cxform], [ratio], [name], [clipDepth],
+//   [clipActions]
+//
+// `move: true` modifies whatever already sits at `depth` instead of placing
+// something new — that's how a timeline animates an existing object across
+// frames rather than replacing it.
+function placeObject2({
+  charId = null, depth, matrix = null, name = null, cxform = null,
+  ratio = null, clipDepth = null, clipActions = null, move = false,
+} = {}) {
+  let flags = 0;
+  if (move) flags |= PLACE.MOVE;
+  if (charId !== null) flags |= PLACE.HAS_CHARACTER;
+  if (matrix !== null) flags |= PLACE.HAS_MATRIX;
+  if (cxform !== null) flags |= PLACE.HAS_COLOR_TRANSFORM;
+  if (ratio !== null) flags |= PLACE.HAS_RATIO;
+  if (name !== null) flags |= PLACE.HAS_NAME;
+  if (clipDepth !== null) flags |= PLACE.HAS_CLIP_DEPTH;
+  if (clipActions !== null) flags |= PLACE.HAS_CLIP_ACTIONS;
+
+  let body = concatBytes(u8(flags), u16le(depth));
+  if (charId !== null) body = concatBytes(body, u16le(charId));
+  if (matrix !== null) body = concatBytes(body, matrix);
+  if (cxform !== null) body = concatBytes(body, cxform);
+  if (ratio !== null) body = concatBytes(body, u16le(ratio));
+  if (name !== null) body = concatBytes(body, cstr(name));
+  if (clipDepth !== null) body = concatBytes(body, u16le(clipDepth));
+  if (clipActions !== null) body = concatBytes(body, clipActions);
+  return tag(26, body);
+}
+
+// -- clip event handlers ------------------------------------------------------
+//
+// The bits below are GFx's own GFxEventId::Event_* constants. GFxSwfEvent::Read
+// assigns the wire flags straight into the event id (`Event = flags;`), so the
+// SDK enum *is* the wire format rather than something mapped onto it.
+//
+// This is how the shipped game movies build interactive UI: a movieclip placed
+// with onRelease/onRollOver handlers, rather than a DefineButton character.
+// Across the 42 sampled movies DefineButton appears 4 times in total, in one
+// file — clip handlers are the idiom the game actually uses.
+const CLIP_EVENT = {
+  load: 0x00001, enterFrame: 0x00002, unload: 0x00004,
+  mouseMove: 0x00008, mouseDown: 0x00010, mouseUp: 0x00020,
+  keyDown: 0x00040, keyUp: 0x00080, data: 0x00100, initialize: 0x00200,
+  press: 0x00400, release: 0x00800, releaseOutside: 0x01000,
+  rollOver: 0x02000, rollOut: 0x04000, dragOver: 0x08000, dragOut: 0x10000,
+  keyPress: 0x20000, construct: 0x40000,
+};
+
+// CLIPACTIONS block for placeObject2({clipActions}).
+//
+// Layout per GFxPlayerImpl.cpp's PO2_HasActions branch:
+//   reserved (u16 = 0)
+//   allFlags (u32) — the OR of every handler's flags
+//   per handler: flags (u32), length (u32), [keyCode u8 if keyPress], actions
+//   terminator (u32 = 0)
+//
+// The u32 (rather than u16) widths apply because that branch selects them for
+// movieVersion >= 6, and buildGfx writes version 8.
+//
+// handlers: [{ events: ['release', ...] | numeric mask, actions: Uint8Array,
+//              keyCode?: number }]
+function clipActions(handlers) {
+  const masks = handlers.map(h => {
+    if (typeof h.events === 'number') return h.events;
+    return h.events.reduce((acc, name) => {
+      if (!(name in CLIP_EVENT)) throw new Error(`unknown clip event ${JSON.stringify(name)}`);
+      return acc | CLIP_EVENT[name];
+    }, 0);
+  });
+  const all = masks.reduce((a, b) => a | b, 0);
+  let body = concatBytes(u16le(0), u32le(all));
+  handlers.forEach((h, i) => {
+    const mask = masks[i];
+    if (!mask) throw new Error('clip action handler has no events');
+    // every handler's action list is self-terminated, so the End byte is part
+    // of the measured length
+    const actions = concatBytes(h.actions, u8(0));
+    const withKey = (mask & CLIP_EVENT.keyPress)
+      ? concatBytes(u8(h.keyCode & 0xff), actions)
+      : actions;
+    body = concatBytes(body, u32le(mask), u32le(withKey.length), withKey);
+  });
+  return concatBytes(body, u32le(0));
+}
+
+// -- timeline ----------------------------------------------------------------
+
+// FrameLabel (43). GFx's GotoLabel does NOT parse numbers out of a label, so a
+// label of "4" is a label named "4" and not frame 4 — worth knowing before
+// naming frames numerically.
+function frameLabel(name) {
+  return tag(43, cstr(name));
+}
+
+// RemoveObject2 (28): clears whatever is at `depth`. Needed whenever content
+// present on one frame is absent on the next — a placed object otherwise
+// persists down the timeline until something removes it.
+function removeObject2(depth) {
+  return tag(28, u16le(depth));
+}
+
+// ExportAssets (56): gives characters public names so script can reach them
+// with attachMovie()/loadMovie(). Used heavily by the shipped game movies
+// (1,516 entries across 23 of the 42 sampled).
+// entries: [{ id, name }]
+function exportAssets(entries) {
+  let body = u16le(entries.length);
+  for (const e of entries) body = concatBytes(body, u16le(e.id), cstr(e.name));
+  return tag(56, body);
+}
+
+// DoInitAction (59): actions that run once, when the sprite's character is
+// first defined, rather than every time its frame is entered.
+function doInitAction(spriteId, avm1Body) {
+  return tag(59, concatBytes(u16le(spriteId), avm1Body));
+}
+
+// DefineScale9Grid (78): marks the 9-slice guides on an already-defined
+// character, so corners keep their size while edges and centre stretch. Body
+// is the character id followed by a RECT giving the inner rectangle, in twips.
+function defineScale9Grid(charId, left, top, right, bottom) {
+  return tag(78, concatBytes(
+    u16le(charId),
+    encodeRect(px(left), px(right), px(top), px(bottom))
+  ));
 }
 
 const BTN_UP = 0x01, BTN_OVER = 0x02, BTN_DOWN = 0x04, BTN_HIT = 0x08;
@@ -292,9 +507,9 @@ const END = tag(0, u8());
 
 // --- container -----------------------------------------------------------
 
-function buildGfx(stageW, stageH, fps, bodyTags) {
+function buildGfx(stageW, stageH, fps, bodyTags, frameCount = 1) {
   let body = encodeRect(0, px(stageW), 0, px(stageH));
-  body = concatBytes(body, u16le(Math.trunc(fps) << 8), u16le(1), bodyTags);
+  body = concatBytes(body, u16le(Math.trunc(fps) << 8), u16le(Math.max(1, frameCount)), bodyTags);
   return concatBytes(latin1('GFX'), u8(8), u32le(8 + body.length), body);
 }
 
@@ -303,6 +518,20 @@ const api = {
   defineShape3, defineShapeEx, defineEditText, placeObject, placeNamed,
   BTN_UP, BTN_OVER, BTN_DOWN, BTN_HIT, defineButton, defineSprite,
   doAction, SHOW_FRAME, END, buildGfx, IDENTITY_MATRIX,
+
+  // timeline + structure
+  placeObject2, PLACE, frameLabel, removeObject2, exportAssets, doInitAction,
+  defineScale9Grid,
+
+  // clip event handlers
+  clipActions, CLIP_EVENT,
+
+  // colour transforms
+  encodeCxform, alphaCxform,
+
+  // text flags
+  EDIT_FLAGS0, EDIT_FLAGS1, TEXT_ALIGN,
+
   _internal: { concatBytes, u8, u16le, i32le, u32le, latin1, cstr },
 };
 

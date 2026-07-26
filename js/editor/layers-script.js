@@ -1,4 +1,98 @@
 
+// -- frames bar -------------------------------------------------------------------
+//
+// A movie with no declared frames is a single unlabelled frame, and the bar
+// collapses to a single "add frames" affordance so nothing changes for the
+// single-frame projects that are still the common case.
+
+function renderFramesBar() {
+  const bar = document.getElementById('framesBar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const frames = state.stage.frames || [];
+
+  if (!frames.length) {
+    const hint = el('button', {
+      class: 'mini-btn', id: 'btnAddFirstFrame',
+      title: 'Split this movie into named timeline frames, so script can gotoAndStop("name")',
+      text: '+ Add timeline frames',
+    });
+    hint.addEventListener('click', () => {
+      pushHistory();
+      // Frame 0 holds everything that already exists; frame 1 starts empty.
+      state.stage.frames = ['frame1', 'frame2'];
+      state.currentFrame = 0;
+      afterStructuralChange();
+    });
+    bar.appendChild(hint);
+    return;
+  }
+
+  bar.appendChild(el('span', { class: 'frames-label', text: 'Frames' }));
+  frames.forEach((label, i) => {
+    const chip = el('button', {
+      class: 'frame-chip' + (i === state.currentFrame ? ' active' : ''),
+      title: 'Show frame ' + (i + 1) + (label ? ' ("' + label + '")' : '') + ' — double-click to rename',
+      text: (i + 1) + (label ? ' · ' + label : ''),
+    });
+    chip.addEventListener('click', () => {
+      state.currentFrame = i;
+      render(); renderFramesBar(); renderProperties(); renderLayers();
+    });
+    chip.addEventListener('dblclick', () => {
+      const next = prompt('Frame label (script uses this with gotoAndStop):', label || '');
+      if (next === null) return;
+      pushHistory();
+      state.stage.frames[i] = next.trim();
+      afterStructuralChange();
+    });
+    bar.appendChild(chip);
+  });
+
+  const add = el('button', { class: 'mini-btn', title: 'Add a frame at the end', text: '+' });
+  add.addEventListener('click', () => {
+    pushHistory();
+    state.stage.frames.push('frame' + (state.stage.frames.length + 1));
+    state.currentFrame = state.stage.frames.length - 1;
+    afterStructuralChange();
+  });
+  bar.appendChild(add);
+
+  const del = el('button', {
+    class: 'mini-btn', title: 'Delete the current frame', text: '✕',
+  });
+  del.addEventListener('click', () => {
+    const frames = state.stage.frames;
+    if (frames.length <= 1) {
+      // Dropping to zero frames means "back to a plain single-frame movie",
+      // so clear every item's now-meaningless frame membership too.
+      pushHistory();
+      state.stage.frames = [];
+      for (const it of state.items) it.frames = null;
+      state.currentFrame = 0;
+      afterStructuralChange();
+      return;
+    }
+    const gone = state.currentFrame;
+    pushHistory();
+    frames.splice(gone, 1);
+    // Re-index membership around the removed frame: anything pinned only to it
+    // becomes "every frame" rather than silently disappearing.
+    for (const it of state.items) {
+      if (!it.frames) continue;
+      const next = it.frames.filter(f => f !== gone).map(f => (f > gone ? f - 1 : f));
+      it.frames = next.length ? next : null;
+    }
+    state.currentFrame = Math.min(gone, frames.length - 1);
+    afterStructuralChange();
+  });
+  bar.appendChild(del);
+  bar.appendChild(el('span', {
+    class: 'small-note frames-note',
+    text: 'Dimmed items live on other frames. Script: gotoAndStop("label").',
+  }));
+}
+
 // -- layers panel ---------------------------------------------------------------
 
 function itemSummary(it) {
@@ -104,27 +198,43 @@ function buildMovieFromState() {
   const m = new GFMovie.Movie(st.width, st.height, {
     fps: st.fps, name: st.name, background: st.background,
     fontName: st.fontName, fontUrl: st.fontUrl,
+    frames: (st.frames && st.frames.length) ? st.frames : null,
   });
+  // Placement extras every kind shares. `frames: null` means "on every frame",
+  // which is what an item gets until it is explicitly assigned to some.
+  const common = (it) => ({ frames: it.frames || null, alpha: it.alpha ?? null });
   for (const it of state.items) {
     if (it.hidden) continue;
     if (it.kind === 'rect') {
-      m.rect(it.x, it.y, it.w, it.h, it.fill, { radius: it.radius || 0, stroke: it.stroke || null });
+      m.rect(it.x, it.y, it.w, it.h, it.fill, {
+        radius: it.radius || 0, stroke: it.stroke || null, ...common(it),
+      });
     } else if (it.kind === 'text') {
-      m.text(it.x, it.y, it.text, { size: it.size, color: it.color, varName: it.varName || null, width: it.w });
+      m.text(it.x, it.y, it.text, {
+        size: it.size, color: it.color, varName: it.varName || null, width: it.w,
+        height: it.height ?? null, ...common(it), ...(it.textOptions || {}),
+      });
     } else if (it.kind === 'button') {
       m.button(it.x, it.y, it.w, it.h, it.event, {
         arg: it.arg, fill: it.fill, hover: it.hover,
         label: it.label || null, labelColor: it.labelColor, labelSize: it.labelSize,
-        radius: it.radius || 0, stroke: it.stroke || null,
+        radius: it.radius || 0, stroke: it.stroke || null, frames: it.frames || null,
       });
     } else if (it.kind === 'clip') {
-      m.clip(it.name, it.x, it.y, it.w, it.h, it.color, { radius: it.radius || 0, stroke: it.stroke || null });
+      m.clip(it.name, it.x, it.y, it.w, it.h, it.color, {
+        radius: it.radius || 0, stroke: it.stroke || null,
+        events: it.events || null, scale9: it.scale9 || null, ...common(it),
+      });
     } else if (it.kind === 'image') {
       if (!it.__imageData) {
         throw new Error(`image at (${Math.round(it.x)},${Math.round(it.y)}) hasn't finished loading yet — wait a moment and try again`);
       }
-      m.image(it.x, it.y, it.w, it.h, it.__imageData);
+      m.image(it.x, it.y, it.w, it.h, it.__imageData, common(it));
+    } else {
+      continue;
     }
+    // exportAs applies to whatever was just added, so it has to follow it.
+    if (it.exportAs) m.exportAs(it.exportAs);
   }
   if (state.script && state.script.trim()) {
     m.script(Compiler.compileSource(state.script));

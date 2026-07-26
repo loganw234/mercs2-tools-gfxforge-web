@@ -14,7 +14,20 @@ let state = {
   currentTextColor: [235, 238, 242, 255],
   mode: 'edit', // 'edit' | 'play'
   multiSelectMode: false, // touch-friendly alternative to shift+click
+  currentFrame: 0, // which timeline frame the stage is showing
 };
+
+// True when `it` is on the frame the editor is currently showing. An item with
+// no explicit frame list is on every frame — that's the default, and it's what
+// keeps single-frame projects behaving as if frames didn't exist.
+function itemOnFrame(it, frame) {
+  return !it.frames || !it.frames.length || it.frames.indexOf(frame) >= 0;
+}
+
+// Items belonging to other frames stay on the canvas at low opacity rather
+// than vanishing, so you keep spatial context (and can still click them) while
+// editing one frame of a multi-frame HUD.
+const OFF_FRAME_ALPHA = 0.22;
 
 let playCtx = null; // { stage, items, interpreter } while state.mode === 'play'
 
@@ -143,10 +156,29 @@ function render() {
 
   if (!playing && state.snap && state.gridSize * state.zoom >= 4) drawGrid(ctx);
 
+  const hasFrames = !playing && state.stage.frames && state.stage.frames.length > 1;
   for (const it of items) {
     if (it.hidden) continue;
     if (playing && it._visible === false) continue;
-    drawItem(ctx, it, playing);
+    const offFrame = hasFrames && !itemOnFrame(it, state.currentFrame);
+    if (offFrame) {
+      ctx.save();
+      ctx.globalAlpha = OFF_FRAME_ALPHA;
+      drawItem(ctx, it, playing);
+      ctx.restore();
+    } else {
+      // An item's own alpha is an export-time colour transform; showing it here
+      // keeps the preview honest about what the movie will look like.
+      const a = it.alpha;
+      if (a !== null && a !== undefined && a < 1) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, a);
+        drawItem(ctx, it, playing);
+        ctx.restore();
+      } else {
+        drawItem(ctx, it, playing);
+      }
+    }
   }
 
   if (!playing) {

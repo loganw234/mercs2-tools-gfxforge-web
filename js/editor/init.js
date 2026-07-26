@@ -52,7 +52,13 @@ function buildHelpBody() {
   "stage": {
     "width": 380, "height": 150, "fps": 30, "name": "hud",
     "background": [22,24,28],
-    "font_name": "_normal_Font", "font_url": "_normal_Font.swf"
+    "font_name": "_normal_Font", "font_url": "_normal_Font.swf",
+    "frames": ["idle","alert"]
+    // optional. Declares a timeline of named frames, which script reaches
+    // with gotoAndStop("alert") / gotoAndPlay("idle"). Omit it (or use one
+    // frame) for an ordinary static HUD. A multi-frame movie gets an
+    // implicit stop() on frame 1 so it holds its first state instead of
+    // cycling. This is how the game's own menus model UI state.
   },
   "items": [
     { "kind": "rect", "x":0, "y":0, "w":380, "h":30, "fill":[232,140,24] },
@@ -72,6 +78,16 @@ function buildHelpBody() {
       "color":[25,25,25], "var":"hp_val", "width":100 },
       // "var" is optional -- set it to bind a live/host-updatable field
 
+    { "kind": "text", "x":14, "y":40, "text":"Long wrapped body copy",
+      "size":12, "color":[220,220,220], "width":200, "height":60,
+      "multiline": true, "word_wrap": true, "align":"center",
+      "html": false, "border": false, "selectable": false,
+      "leading": 2, "max_length": null },
+      // All optional. Without them a text field is a single read-only
+      // non-selectable line, which is what it always used to be. "height"
+      // only matters once "multiline" is on. "align" is left/right/center/
+      // justify.
+
     { "kind": "button", "x":20, "y":90, "w":120, "h":24, "event":"quit",
       "arg": null, "label":"QUIT",
       "fill":[52,58,68], "hover":[74,82,96],
@@ -81,6 +97,24 @@ function buildHelpBody() {
     { "kind": "clip", "name":"bar", "x":4, "y":44, "w":100, "h":8,
       "fill":[0,200,0] },
       // named MovieClip -- the only thing script/host can move by name
+
+    { "kind": "clip", "name":"fireBtn", "x":20, "y":60, "w":90, "h":24,
+      "fill":[52,58,68],
+      "events": { "release": "fscommand(\\"fire\\", 1);",
+                  "rollOver": "_root.fireBtn._alpha = 100;",
+                  "rollOut":  "_root.fireBtn._alpha = 70;" },
+      "export": "FireButton",
+      "scale9": { "left":6, "top":6, "right":84, "bottom":18 } },
+      // "events" attaches AS2 handlers to this clip's placement -- press,
+      // release, releaseOutside, rollOver, rollOut, dragOver, dragOut,
+      // enterFrame, load, unload, keyDown, keyUp. This is how the game's own
+      // UI does interaction; "button" below uses a real Button character,
+      // which the shipped movies barely touch.
+      // "export" emits an ExportAssets entry so script can attachMovie() it.
+      // "scale9" marks 9-slice guides (clip-local coords) so corners keep
+      // their size when the clip is scaled.
+      // Handlers only apply to "clip" items; on any other kind they're
+      // ignored with a warning.
 
     { "kind": "image", "x":10, "y":10, "w":32, "h":32,
       "data_url": "data:image/png;base64,...." },
@@ -95,6 +129,14 @@ function buildHelpBody() {
       // generated SetSelected(i) function on load. Re-saving the
       // project emits the expanded (button/clip) form, not "menu".
   ],
+  // Every item also accepts these two, whatever its kind:
+  //   "frames": [0]     which timeline frames it appears on (0-based).
+  //                     Omit for "every frame", which is the default and
+  //                     the only sensible answer without a timeline.
+  //                     Content on one frame but not the next is removed
+  //                     with RemoveObject2 and re-placed at the same depth
+  //                     if it comes back later.
+  //   "alpha": 0.5      placement opacity, 0..1. Omit (or 1) for opaque.
   "script": "function SetHealth(n) {\n  _root.hp_val = n;\n}\n"
 }`;
   body.innerHTML = '';
@@ -107,7 +149,8 @@ function buildHelpBody() {
 "lock_size": true    // handles hidden (still movable)` }));
 
   body.appendChild(sectionTitle('Script'));
-  body.appendChild(el('p', { class: 'small-note', text: 'Plain gfxforge AS2-subset source (same editor as the Script tab): literals (incl. arrays [1,2,3]), variables, obj.member / obj[key], + - * / % and += -= *= /= %=, comparisons, && ||, ! -, calls, fscommand("evt", x), if/else, while, for(;;), break, continue, function, return. Compile errors report a line and column.' }));
+  body.appendChild(el('p', { class: 'small-note', text: 'Plain gfxforge AS2-subset source (same editor as the Script tab). Literals: numbers (decimal and 0xHEX), strings, booleans, null, undefined, arrays [1,2,3], objects {a:1}. Expressions: variables, this, obj.member, obj[key], calls, method calls, new C(a), function expressions, ternary c ? a : b. Operators: + - * / % , comparisons including === and !==, && || (short-circuiting), ! - + ~, typeof, delete, instanceof, bitwise & | ^ << >> >>>, ++ and -- in both fixities, and compound assignment (+= -= *= /= %= &= |= ^= <<= >>= >>>=). Statements: if/else, while, do/while, for(;;), for-in, switch/case/default, break, continue, var, function, return, fscommand("evt", x). Built-ins that lower to single opcodes: trace(), random(n), getTimer(), int(), Number(), String(), ord(), chr(), and the timeline verbs play(), stop(), gotoAndStop(f), gotoAndPlay(f). Compile errors report a line and column.' }));
+  body.appendChild(el('p', { class: 'small-note', text: 'Not supported on purpose: try/catch/throw. This player routes the try opcode to its "unsupported opcode" branch, so a movie using it would load and then silently skip the handler — better to fail at compile time than to ship that. Also note && and || return the operand value (as in real AS2), not a coerced boolean, and var inside a function is a true local rather than a _root global.' }));
 
   body.appendChild(sectionTitle('Confidence notes'));
   body.appendChild(el('p', { class: 'small-note', text: 'The core codec (shapes, text, buttons, AVM1 scripting) is checked byte-for-byte against the original Python gfxforge library and is solid. Gradients/strokes/rounded corners are new and independently verified by decoding the encoder\'s own output and checking the geometry, since no external reference exists for that part of the SWF spec. Image import is the newest and least-verified piece -- the zlib compression is checked against Python\'s real zlib, but the exact bitmap pixel format has no reference to check against, so treat it as experimental and check a test image in-engine before relying on it for real assets.' }));
@@ -147,6 +190,7 @@ function init() {
   setTool('select');
   fitZoom();
   updateHistoryButtons();
+  renderFramesBar();
   wireLuaPanel();
   wireResizers();
 }
